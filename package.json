@@ -1,0 +1,13 @@
+{
+  "name": "homecare-jobs",
+  "version": "1.0.0",
+  "description": "Multi-agency career site + job board you can embed on any home care agency website",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "seed": "node --no-warnings lib/seed.js",
+    "test": "node --no-warnings --test test/"
+  },
+  "engines": { "node": ">=22.13" },
+  "license": "UNLICENSED"
+}
