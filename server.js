@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { agencies, jobs, applications } = require('./lib/db');
 const render = require('./lib/render');
+const { parseFormEmbed, resolveApplyForm } = require('./lib/forms');
 
 const PORT = Number(process.env.PORT || 3000);
 const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -65,9 +66,11 @@ const publicJob = (j, agency) => ({
   shifts: j.shifts, summary: j.summary, posted_at: j.posted_at, valid_through: j.valid_through,
   url: `${BASE_URL}/careers/${agency.slug}/${j.slug}`,
 });
-const publicAgency = (a) => ({ slug: a.slug, name: a.name, website: a.website, logo_url: a.logo_url, brand_color: a.brand_color, phone: a.phone, city: a.city, state: a.state, about: a.about });
+const publicAgency = (a) => ({ apply_form: resolveApplyForm(a, null), slug: a.slug, name: a.name, website: a.website, logo_url: a.logo_url, brand_color: a.brand_color, phone: a.phone, city: a.city, state: a.state, about: a.about });
 const adminAgency = (a, showKey) => (showKey ? a : { ...a, api_key: undefined });
 
+/** Validates a pasted CareFunnels form embed before saving (throws 400 with a helpful message). */
+function validateForm(body) { if (body.apply_form_embed) parseFormEmbed(body.apply_form_embed); return body; }
 const clean = (v, max = 500) => (v == null ? null : String(v).trim().slice(0, max) || null);
 
 async function notifyWebhook(agency, app, job) {
@@ -122,7 +125,7 @@ route('GET', '/api/public/:agency/jobs/:job', (req, res, p) => {
   const j = jobs.get(a.id, p.job); if (!j || j.status === 'draft') throw new HttpError(404, 'Job not found');
   send(res, 200, {
     agency: publicAgency(a),
-    job: { ...publicJob(j, a), is_open: j.status === 'open', description_html: render.fullDescriptionHtml(j, a) },
+    job: { ...publicJob(j, a), is_open: j.status === 'open', description_html: render.fullDescriptionHtml(j, a), apply_form: resolveApplyForm(a, j) },
     jsonld: j.status === 'open' ? render.jobPostingJsonLd(j, a, BASE_URL) : null,
   }, undefined, { ...cors, 'Cache-Control': 'public, max-age=60' });
 });
@@ -190,11 +193,11 @@ route('POST', '/api/admin/agencies', async (req, res) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
   const b = await readJson(req);
   if (!b.name) throw new HttpError(400, 'name is required');
-  try { send(res, 201, agencies.create(b)); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
+  try { send(res, 201, agencies.create(validateForm(b))); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
 });
 route('PUT', '/api/admin/agencies/:id', async (req, res, p) => {
   const a = authAgency(req, p.id);
-  try { send(res, 200, agencies.update(a.id, await readJson(req))); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
+  try { send(res, 200, agencies.update(a.id, validateForm(await readJson(req)))); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
 });
 route('POST', '/api/admin/agencies/:id/rotate-key', (req, res, p) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
@@ -205,10 +208,14 @@ route('DELETE', '/api/admin/agencies/:id', (req, res, p) => {
   agencies.remove(authAgency(req, p.id).id); send(res, 200, { ok: true });
 });
 
+route('POST', '/api/admin/parse-form', async (req, res) => {
+  if (!isSuper(req)) authAgency(req, null);
+  send(res, 200, parseFormEmbed((await readJson(req)).embed) || {});
+});
 route('GET', '/api/admin/agencies/:id/jobs', (req, res, p) => send(res, 200, jobs.list(authAgency(req, p.id).id)));
-route('POST', '/api/admin/agencies/:id/jobs', async (req, res, p) => send(res, 201, jobs.create(authAgency(req, p.id).id, await readJson(req))));
+route('POST', '/api/admin/agencies/:id/jobs', async (req, res, p) => send(res, 201, jobs.create(authAgency(req, p.id).id, validateForm(await readJson(req)))));
 route('PUT', '/api/admin/agencies/:id/jobs/:job', async (req, res, p) => {
-  const j = jobs.update(authAgency(req, p.id).id, p.job, await readJson(req)); if (!j) throw new HttpError(404, 'Job not found'); send(res, 200, j);
+  const j = jobs.update(authAgency(req, p.id).id, p.job, validateForm(await readJson(req))); if (!j) throw new HttpError(404, 'Job not found'); send(res, 200, j);
 });
 route('DELETE', '/api/admin/agencies/:id/jobs/:job', (req, res, p) => { jobs.remove(authAgency(req, p.id).id, p.job); send(res, 200, { ok: true }); });
 

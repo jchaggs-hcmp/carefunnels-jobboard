@@ -131,10 +131,12 @@ function jobDialog(j) {
     <label class="full">Requirements<textarea name="requirements" rows="4" placeholder="- Valid driver's license&#10;- CNA or HHA preferred">${esc(j.requirements)}</textarea></label>
     <label class="full">Benefits<textarea name="benefits" rows="4" placeholder="- Weekly pay&#10;- Flexible scheduling">${esc(j.benefits)}</textarea></label>
     <label>Expires on (optional)<input name="valid_through" type="date" value="${esc(j.valid_through)}"></label>
+    <label class="full">CareFunnels form for this job only (optional)<textarea name="apply_form_embed" rows="2" data-formcheck placeholder="Leave blank to use the agency's default application form${agency.apply_form_embed ? ' (CareFunnels form set)' : ' (built-in form)'}">${esc(j.apply_form_embed)}</textarea></label>
+    <div class="full small muted" data-formout></div>
   </div><div class="row" style="margin-top:16px;justify-content:space-between">
     <div class="row"><button class="btn" value="save">Save</button><button class="btn ghost" value="cancel" formnovalidate>Cancel</button></div>
     ${j.id ? '<button class="btn danger" value="delete" formnovalidate>Delete</button>' : ''}</div></form>`;
-  document.body.appendChild(d); d.showModal();
+  document.body.appendChild(d); d.showModal(); wireFormCheck(d);
   d.addEventListener('close', async () => {
     const action = d.returnValue; const data = formData($('form', d)); d.remove();
     try {
@@ -196,6 +198,10 @@ function paneInstall() {
   $('#pane').innerHTML =
     block('1. Full job board (recommended)', 'Paste on the agency’s “Careers” / “Join Our Team” page. Works in WordPress (Custom HTML block), Wix (Embed → Custom code), Squarespace (Code block), GoHighLevel / CareFunnels (Custom HTML/JS element), Webflow (Embed) and Duda.', `<div id="hc-jobs" data-agency="${s}"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
     block('2. “We’re hiring” teaser', 'Shows the 3 newest jobs, e.g. on the homepage or footer. Cards link to the full careers page.', `<div class="hc-jobs" data-agency="${s}" data-limit="3" data-link="https://AGENCY-SITE.com/careers"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
+    `<div class="card"><h3 style="margin-top:0">Applications → CareFunnels ${agency.apply_form_embed ? '<span class="pill open">connected</span>' : '<span class="pill draft">using built-in form</span>'}</h3>
+      <p class="small" style="margin:0 0 6px">${agency.apply_form_embed ? 'The apply step on every job shows this agency’s CareFunnels form, so applicants go straight into their sub-account.' : 'Paste the agency’s CareFunnels form in <b>Agency settings</b> to send applicants straight into their sub-account.'}</p>
+      <p class="small muted" style="margin:0">To know which job someone applied for, add <b>Hidden</b> fields to the CareFunnels form with these Query Keys (they fill in automatically):</p>
+      <pre>job_title  job_id  job_location  job_category  job_url  application_source  utm_source  utm_medium  utm_campaign  gclid  fbclid</pre></div>` +
     block('3. WordPress shortcode', 'Install the included hc-jobs WordPress plugin (wordpress/hc-jobs), then use:', `[hc_jobs agency="${s}"]`) +
     block('4. Hosted career site (no website access needed)', 'A ready-made, SEO-optimised careers page. Link to it from the agency’s nav menu, or point a subdomain like careers.agency.com at it.', `${BASE}/careers/${s}`) +
     block('5. Job board syndication feed', 'Submit this XML feed to Indeed, ZipRecruiter, Talent.com, Jooble, etc. so jobs post there automatically and stay in sync.', `${BASE}/feeds/${s}.xml`) +
@@ -211,20 +217,36 @@ function agencyFields(a = {}) {
     ${f('street', 'Street')}${f('city', 'City')}${f('state', 'State', 'maxlength="2"')}${f('zip', 'ZIP')}
     <label class="full">About / why work with us<textarea name="about" rows="3">${esc(a.about)}</textarea></label>
     ${f('webhook_url', 'New applicant webhook URL', 'type="url" placeholder="GoHighLevel / Zapier / Make inbound webhook"', 'full')}
-    ${f('notify_email', 'Hiring manager email (sent in webhook)', 'type="email"', 'full')}</div>`;
+    ${f('notify_email', 'Hiring manager email (sent in webhook)', 'type="email"', 'full')}
+    <fieldset class="full" style="border:1px solid var(--line);border-radius:8px;padding:12px"><legend style="font-weight:600;font-size:13px;padding:0 4px">CareFunnels application form</legend>
+      <div class="grid">${f('carefunnels_location_id', 'CareFunnels sub-account (location) ID', 'placeholder="optional, for reference"')}
+      <label class="full">Form embed code or form link<textarea name="apply_form_embed" rows="4" data-formcheck placeholder="Paste from CareFunnels → Sites → Forms → Integrate → Embed (or the form's share link). Leave blank to use the built-in application form.">${esc(a.apply_form_embed)}</textarea></label>
+      <div class="full small muted" data-formout></div></div></fieldset></div>`;
 }
 function paneSettings() {
   $('#pane').innerHTML = `<form class="card" id="setf"><h3 style="margin-top:0">Agency settings</h3>${agencyFields(agency)}<div class="row" style="margin-top:14px"><button class="btn">Save</button></div></form>
   <div class="card"><h3 style="margin-top:0">Agency access key</h3><p class="muted small">Give this to the agency so they can log in and manage their own jobs and applicants. Keep it private.</p>
   <pre>${esc(agency.api_key)}</pre>${me.role === 'super' ? '<div class="row"><button class="btn ghost sm" id="rot">Rotate key</button><button class="btn danger sm" id="del">Delete agency</button></div>' : ''}</div>`;
+  wireFormCheck($('#setf'));
   $('#setf').onsubmit = async (e) => { e.preventDefault(); try { const u = await api(`/api/admin/agencies/${agency.id}`, { method: 'PUT', body: JSON.stringify(formData(e.target)) }); Object.assign(agency, u); toast('Saved'); render(); } catch (x) { alert(x.message); } };
   $('#rot') && ($('#rot').onclick = async () => { if (!confirm('Rotate key? The old key stops working immediately.')) return; Object.assign(agency, await api(`/api/admin/agencies/${agency.id}/rotate-key`, { method: 'POST' })); paneSettings(); });
   $('#del') && ($('#del').onclick = async () => { if (prompt(`Type ${agency.slug} to permanently delete this agency, its jobs and applicants`) !== agency.slug) return; await api(`/api/admin/agencies/${agency.id}`, { method: 'DELETE' }); localStorage.removeItem('hcj_agency'); boot(); });
 }
+// live check of a pasted CareFunnels embed: shows the detected form id, or the error
+function wireFormCheck(root) {
+  const ta = root.querySelector('[data-formcheck]'), out = root.querySelector('[data-formout]'); if (!ta || !out) return;
+  const check = async () => {
+    if (!ta.value.trim()) { out.textContent = ''; return; }
+    try { const r = await api('/api/admin/parse-form', { method: 'POST', body: JSON.stringify({ embed: ta.value }) });
+      out.innerHTML = `✅ CareFunnels ${esc(r.kind)} detected${r.form_id ? ` · ID <code>${esc(r.form_id)}</code>` : ''} · <a href="${esc(r.src)}" target="_blank" rel="noopener">open form ↗</a>`;
+    } catch (e) { out.innerHTML = `<span style="color:var(--err)">⚠ ${esc(e.message)}</span>`; }
+  };
+  ta.addEventListener('input', () => { clearTimeout(ta._t); ta._t = setTimeout(check, 350); }); check();
+}
 function agencyDialog() {
   const d = document.createElement('dialog');
   d.innerHTML = `<form method="dialog"><h3 style="margin-top:0">New agency</h3>${agencyFields()}<div class="row" style="margin-top:14px"><button class="btn" value="save">Create</button><button class="btn ghost" value="cancel" formnovalidate>Cancel</button></div></form>`;
-  document.body.appendChild(d); d.showModal();
+  document.body.appendChild(d); d.showModal(); wireFormCheck(d);
   d.addEventListener('close', async () => {
     const v = d.returnValue, data = formData($('form', d)); d.remove(); if (v !== 'save') return;
     try { const a = await api('/api/admin/agencies', { method: 'POST', body: JSON.stringify(data) }); localStorage.setItem('hcj_agency', a.id); tab = 'install'; toast('Agency created'); boot(); } catch (e) { alert(e.message); }

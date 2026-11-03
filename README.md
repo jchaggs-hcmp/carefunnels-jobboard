@@ -19,6 +19,22 @@ It has no dependencies: Node 22.13+ and the built-in SQLite. There's no build st
 | CRM hand-off | Every application is POSTed as JSON to the agency's webhook (GoHighLevel inbound webhook, Zapier or Make) so it can trigger SMS/email follow-up |
 | Conversion tracking | Pushes `hc_job_application` to `dataLayer` (GTM/GA4) and fires the Meta Pixel `SubmitApplication` event |
 
+## CareFunnels application forms (applicants go straight into the client's sub-account)
+
+Each agency can use **its own CareFunnels form** for the apply step instead of the built-in form:
+
+1. In the client's CareFunnels sub-account, go to **Sites → Forms → (form) → Integrate → Embed** and copy the embed code. The form's share link also works.
+2. In this admin, go to **Agency settings → CareFunnels application form**, paste it and save. The field shows the detected form ID straight away, or an error if the paste isn't a valid form.
+3. *(Optional)* Paste a different form on an individual job, for example a CNA-specific form. Jobs without one use the agency's form.
+
+Every job's apply step and the general application then show that form, so submissions create or update contacts in the client's sub-account and trigger its workflows.
+
+**Recording which job someone applied for.** The widget adds these values to the form URL. Add **Hidden** fields to the CareFunnels form with matching **Query Keys**, and they'll be saved on the contact:
+
+`job_title` · `job_id` · `job_location` · `job_category` · `job_url` · `application_source` · `utm_source` · `utm_medium` · `utm_campaign` · `utm_term` · `utm_content` · `gclid` · `fbclid`
+
+How it works: the pasted HTML is never shown to visitors as-is. The server pulls out and checks the form URL (https only), the form ID and the `data-*` layout attributes, then the widget builds its own iframe from those. The iframe is placed in the page's normal DOM through a `<slot>`, so CareFunnels' `form_embed.js` can find it to auto-size it and track it. If no CareFunnels form is set, the built-in form and webhook are used.
+
 ## Run it
 
 ```bash

@@ -116,6 +116,8 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
     this.root.appendChild(this.view);
     var self = this;
     window.addEventListener('popstate', function () { self.route(); });
+    // remove any slotted form left over from a previous init
+    this.clearSlot();
     this.load(cfg.job);
   }
 
@@ -137,7 +139,7 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
 
   // embed mode keeps state in ?job=slug so job links are shareable and back-button works
   Widget.prototype.route = function () {
-    if (this.mode === 'page') return this.showList();
+    if (this.mode === 'page' || this.limit) return this.showList(); // teasers never open job detail
     var job = new URLSearchParams(location.search).get('job');
     job ? this.showJob(job, false) : this.showList();
   };
@@ -158,6 +160,7 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
   };
 
   Widget.prototype.showList = function () {
+    this.clearSlot();
     var self = this, all = this.jobs;
     if (this.category) all = all.filter(function (j) { return j.category === self.category; });
     if (this.limit) return this.view.replaceChildren(this.renderCards(all.slice(0, this.limit), all.length));
@@ -205,6 +208,7 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
     var self = this;
     api(this.base, '/api/public/' + encodeURIComponent(this.slug) + '/jobs/' + encodeURIComponent(slug)).then(function (d) {
       var j = d.job;
+      self.clearSlot();
       if (self.mode !== 'page') injectJsonLd(d.jsonld); // hosted pages get JSON-LD server-side
       if (self.mode !== 'page') document.title = j.title + ' | ' + d.agency.name;
       var applyBox = h('div');
@@ -220,7 +224,7 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
           applyBox,
         ])
       );
-      if (j.is_open) applyBox.appendChild(self.form(j));
+      if (j.is_open) applyBox.appendChild(j.apply_form ? self.cfForm(j.apply_form, j) : self.form(j));
       if (scroll) self.host.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }).catch(function () {
       self.view.replaceChildren(h('div', { class: 'empty' }, ['That job is no longer available. ', h('button', { class: 'link', onclick: function () { self.back(); } }, 'See open positions')]));
@@ -228,11 +232,42 @@ legend{font-size:14px;font-weight:600;padding:0 4px}\
   };
 
   Widget.prototype.showApply = function (job) {
-    var self = this;
+    var self = this, cf = this.agency && this.agency.apply_form;
+    this.clearSlot();
     this.view.replaceChildren(
       h('button', { class: 'link', onclick: function () { self.showList(); } }, '← Back'),
-      h('div', { class: 'detail' }, [h('h2', null, 'General application'), h('p', { class: 'small' }, "Tell us about yourself and we'll reach out when a position fits."), this.form(job)])
+      h('div', { class: 'detail' }, [h('h2', null, 'General application'), h('p', { class: 'small' }, "Tell us about yourself and we'll reach out when a position fits."), cf ? this.cfForm(cf, null) : this.form(job)])
     );
+  };
+
+  // ---- CareFunnels (GoHighLevel) form ----
+  // The iframe lives in the host's light DOM and is projected through a <slot>, so CareFunnels' form_embed.js
+  // can find it by id (for auto-height, layout and tracking) — it can't see inside a shadow root.
+  Widget.prototype.clearSlot = function () {
+    var old = this.host.querySelector(':scope > [slot="hc-apply"]'); if (old) old.remove();
+  };
+  Widget.prototype.cfForm = function (cfg, job) {
+    this.clearSlot();
+    var src = new URL(cfg.src);
+    // Prefill hidden fields: in CareFunnels add Hidden fields with these "Query Key"s to capture them on the contact.
+    var pre = { job_title: job ? job.title : 'General application', job_id: job ? job.id : '', job_location: job ? loc(job) : '',
+      job_category: job ? job.category || '' : '', job_url: job ? job.url : '', application_source: location.href.split('#')[0] };
+    var page = new URLSearchParams(location.search);
+    ['utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content', 'gclid', 'fbclid'].forEach(function (k) { if (page.get(k)) pre[k] = page.get(k); });
+    for (var k in pre) if (pre[k] !== '' && pre[k] != null && !src.searchParams.has(k)) src.searchParams.set(k, pre[k]);
+
+    var attrs = { src: src.href, title: cfg.iframe_attrs.title || 'Job application', loading: 'lazy',
+      style: 'width:100%;border:none;border-radius:4px;display:block;min-height:' + (cfg.height || 900) + 'px;height:' + (cfg.height || 900) + 'px' };
+    for (var a in cfg.iframe_attrs) if (a !== 'title') attrs[a] = cfg.iframe_attrs[a];
+    var holder = h('div', { slot: 'hc-apply', style: 'margin-top:8px' }, h('iframe', attrs));
+    this.host.appendChild(holder);
+    if (cfg.script_src && !document.querySelector('script[src="' + cfg.script_src + '"]')) {
+      var sc = document.createElement('script'); sc.src = cfg.script_src; sc.async = true; document.body.appendChild(sc);
+    }
+    return h('div', null, [
+      h('h3', { style: 'font-size:20px;margin:8px 0 4px' }, job ? 'Apply for this position' : 'Your information'),
+      h('slot', { name: 'hc-apply' }),
+    ]);
   };
 
   Widget.prototype.form = function (job) {
