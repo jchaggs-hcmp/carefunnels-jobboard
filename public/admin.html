@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Job Board Admin</title>
+<meta name="robots" content="noindex">
+<style>
+:root{--brand:#0f6cbd;--ink:#1b1f24;--muted:#5b6470;--line:#e3e7ec;--bg:#f6f8fa;--card:#fff;--ok:#127a3a;--err:#b42318}
+*{box-sizing:border-box}body{margin:0;font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+button,input,select,textarea{font:inherit;color:inherit}
+header{background:var(--card);border-bottom:1px solid var(--line);padding:0 16px}
+.top{max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:12px;min-height:56px;flex-wrap:wrap}
+.top b{font-size:17px}.top .sp{flex:1}
+main{max-width:1180px;margin:0 auto;padding:20px 16px 60px}
+nav.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:18px;overflow-x:auto}
+nav.tabs button{background:none;border:0;padding:10px 14px;cursor:pointer;border-bottom:2px solid transparent;color:var(--muted);white-space:nowrap}
+nav.tabs button.on{color:var(--brand);border-color:var(--brand);font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}
+.btn{background:var(--brand);color:#fff;border:0;border-radius:7px;padding:8px 14px;cursor:pointer;font-weight:600}
+.btn.ghost{background:transparent;color:var(--brand);border:1px solid var(--line)}
+.btn.danger{background:transparent;color:var(--err);border:1px solid var(--line)}
+.btn.sm{padding:4px 10px;font-size:13px}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.tw{overflow-x:auto}
+.pill{display:inline-block;border-radius:999px;padding:1px 9px;font-size:12px;font-weight:600;background:#eef1f4}
+.pill.open,.pill.hired{background:#e3f5ea;color:var(--ok)}.pill.closed,.pill.rejected{background:#fdecea;color:var(--err)}.pill.draft{background:#fff4e5;color:#8a5300}.pill.new{background:#e6f0fb;color:var(--brand)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+label{display:grid;gap:3px;font-size:13px;font-weight:600}
+label input,label select,label textarea{font-weight:400;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:#fff;width:100%}
+.full{grid-column:1/-1}
+.muted{color:var(--muted)}.small{font-size:13px}
+pre{background:#0f1720;color:#e6edf3;padding:12px 14px;border-radius:8px;overflow-x:auto;font-size:13px;white-space:pre-wrap;word-break:break-all;margin:6px 0 4px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+dialog{border:0;border-radius:12px;padding:0;width:min(820px,96vw);max-height:92vh}
+dialog::backdrop{background:rgba(15,23,32,.45)}
+dialog form{padding:20px}
+.login{max-width:420px;margin:12vh auto}
+#toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:#1b1f24;color:#fff;padding:10px 16px;border-radius:8px;display:none;z-index:9}
+.kpis{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));margin-bottom:16px}
+.kpis .card{margin:0}.kpis b{display:block;font-size:26px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast"></div>
+<script>
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const BASE = location.origin;
+let token = localStorage.getItem('hcj_token') || '';
+let me = null, agency = null, tab = 'jobs', cache = {};
+
+function toast(m) { const t = $('#toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => (t.style.display = 'none'), 2600); }
+async function api(path, opts = {}) {
+  const r = await fetch(BASE + path, { ...opts, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+  if (r.status === 401) { logout(); throw new Error('Session expired'); }
+  const b = r.headers.get('content-type')?.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(b.error || 'Request failed');
+  return b;
+}
+function logout() { token = ''; localStorage.removeItem('hcj_token'); me = agency = null; render(); }
+const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]));
+
+async function boot() {
+  if (!token) return render();
+  try { me = await api('/api/admin/me'); const saved = localStorage.getItem('hcj_agency'); agency = me.agencies.find((a) => String(a.id) === saved) || me.agencies[0] || null; }
+  catch { me = null; }
+  render();
+}
+
+function render() {
+  const app = $('#app');
+  if (!me) {
+    app.innerHTML = `<div class="login card"><h2 style="margin-top:0">Job Board Admin</h2>
+      <p class="muted small">Sign in with your agency key (or the platform admin token).</p>
+      <form id="login" class="grid"><label class="full">Access key<input name="k" type="password" autocomplete="current-password" required></label><div><button class="btn">Sign in</button></div></form></div>`;
+    $('#login').onsubmit = (e) => { e.preventDefault(); token = formData(e.target).k; localStorage.setItem('hcj_token', token); boot(); };
+    return;
+  }
+  app.innerHTML = `<header><div class="top"><b>🏠 Job Board</b>
+    ${me.role === 'super' ? `<select id="agencySel" aria-label="Agency">${me.agencies.map((a) => `<option value="${a.id}" ${a.id === agency?.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
+      <button class="btn ghost sm" id="newAgency">+ New agency</button>` : `<span>${esc(agency?.name)}</span>`}
+    <span class="sp"></span>${agency ? `<a class="small" href="${BASE}/careers/${esc(agency.slug)}" target="_blank" rel="noopener">View career site ↗</a>` : ''}
+    <button class="btn ghost sm" id="logout">Sign out</button></div></header>
+    <main>${agency ? `<nav class="tabs">${[['jobs', 'Jobs'], ['apps', 'Applicants'], ['install', 'Install on website'], ['settings', 'Agency settings']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav><div id="pane"></div>`
+      : `<div class="card"><h3>No agencies yet</h3><p>Create your first agency to get started.</p><button class="btn" id="newAgency2">+ New agency</button></div>`}</main>`;
+  $('#logout').onclick = logout;
+  $('#agencySel') && ($('#agencySel').onchange = (e) => { agency = me.agencies.find((a) => String(a.id) === e.target.value); localStorage.setItem('hcj_agency', agency.id); cache = {}; render(); });
+  [$('#newAgency'), $('#newAgency2')].forEach((b) => b && (b.onclick = () => agencyDialog()));
+  document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { tab = b.dataset.tab; render(); }));
+  if (agency) ({ jobs: paneJobs, apps: paneApps, install: paneInstall, settings: paneSettings })[tab]();
+}
+
+// ---------------- Jobs ----------------
+const TYPES = { FULL_TIME: 'Full-time', PART_TIME: 'Part-time', PER_DIEM: 'Per diem', CONTRACTOR: 'Contract', TEMPORARY: 'Temporary' };
+const CATS = ['Caregiver', 'CNA', 'HHA', 'Companion', 'LPN', 'RN', 'Live-in Caregiver', 'Office / Admin', 'Scheduler', 'Marketing'];
+async function paneJobs() {
+  const pane = $('#pane');
+  const list = await api(`/api/admin/agencies/${agency.id}/jobs`);
+  const open = list.filter((j) => j.status === 'open').length;
+  pane.innerHTML = `<div class="kpis"><div class="card"><b>${open}</b><span class="muted small">Open jobs</span></div><div class="card"><b>${list.reduce((s, j) => s + j.applicant_count, 0)}</b><span class="muted small">Total applicants</span></div></div>
+  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3 style="margin:0">Jobs</h3><button class="btn" id="addJob">+ Post a job</button></div>
+  ${list.length ? `<div class="tw"><table><thead><tr><th>Title</th><th>Location</th><th>Pay</th><th>Status</th><th>Applicants</th><th></th></tr></thead><tbody>
+  ${list.map((j) => `<tr><td><b>${esc(j.title)}</b><div class="small muted">${esc(j.category || '')} ${esc(TYPES[j.employment_type] || '')}</div></td>
+    <td>${esc([j.city, j.state].filter(Boolean).join(', '))}</td><td>${j.pay_min != null ? '$' + j.pay_min + (j.pay_max && j.pay_max !== j.pay_min ? '–$' + j.pay_max : '') + '/' + (j.pay_unit || 'HOUR').toLowerCase() : ''}</td>
+    <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td><td>${j.applicant_count}</td>
+    <td><div class="row"><button class="btn ghost sm" data-edit="${j.id}">Edit</button><button class="btn ghost sm" data-dup="${j.id}">Duplicate</button>
+    ${j.status === 'open' ? `<a class="btn ghost sm" style="text-decoration:none" target="_blank" rel="noopener" href="${BASE}/careers/${esc(agency.slug)}/${esc(j.slug)}">View</a>` : ''}</div></td></tr>`).join('')}
+  </tbody></table></div>` : '<p class="muted">No jobs yet. Post your first caregiver opening.</p>'}</div>`;
+  $('#addJob').onclick = () => jobDialog({ status: 'open', pay_unit: 'HOUR', employment_type: 'PART_TIME', category: 'Caregiver', city: agency.city, state: agency.state, zip: agency.zip });
+  pane.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => jobDialog(list.find((j) => j.id == b.dataset.edit))));
+  pane.querySelectorAll('[data-dup]').forEach((b) => (b.onclick = () => { const { id, slug, ...rest } = list.find((j) => j.id == b.dataset.dup); jobDialog({ ...rest, title: rest.title + ' (copy)', status: 'draft' }); }));
+}
+
+function jobDialog(j) {
+  const d = document.createElement('dialog');
+  const opt = (arr, v) => arr.map(([k, l]) => `<option value="${esc(k)}" ${k === v ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  d.innerHTML = `<form method="dialog"><h3 style="margin-top:0">${j.id ? 'Edit job' : 'Post a job'}</h3><div class="grid">
+    <label class="full">Job title *<input name="title" required value="${esc(j.title)}" placeholder="Caregiver — Weekend Shifts"></label>
+    <label>Category<input name="category" list="cats" value="${esc(j.category)}"><datalist id="cats">${CATS.map((c) => `<option value="${c}">`).join('')}</datalist></label>
+    <label>Employment type<select name="employment_type"><option value="">—</option>${opt(Object.entries(TYPES), j.employment_type)}</select></label>
+    <label>Status<select name="status">${opt([['open', 'Open (live)'], ['draft', 'Draft (hidden)'], ['closed', 'Closed / filled']], j.status)}</select></label>
+    <label>City<input name="city" value="${esc(j.city)}"></label><label>State<input name="state" maxlength="2" value="${esc(j.state)}"></label><label>ZIP<input name="zip" value="${esc(j.zip)}"></label>
+    <label>Pay from ($)<input name="pay_min" type="number" step="0.01" value="${esc(j.pay_min)}"></label><label>Pay to ($)<input name="pay_max" type="number" step="0.01" value="${esc(j.pay_max)}"></label>
+    <label>Per<select name="pay_unit">${opt([['HOUR', 'Hour'], ['DAY', 'Day'], ['WEEK', 'Week'], ['MONTH', 'Month'], ['YEAR', 'Year']], j.pay_unit)}</select></label>
+    <label class="full">Shifts<input name="shifts" value="${esc(j.shifts)}" placeholder="Days, Evenings, Weekends, Live-in"></label>
+    <label class="full">Short summary (shown on job cards)<input name="summary" maxlength="240" value="${esc(j.summary)}"></label>
+    <label class="full">Description<textarea name="description" rows="6" placeholder="Blank line = new paragraph. Start a line with - for bullets.">${esc(j.description)}</textarea></label>
+    <label class="full">Requirements<textarea name="requirements" rows="4" placeholder="- Valid driver's license&#10;- CNA or HHA preferred">${esc(j.requirements)}</textarea></label>
+    <label class="full">Benefits<textarea name="benefits" rows="4" placeholder="- Weekly pay&#10;- Flexible scheduling">${esc(j.benefits)}</textarea></label>
+    <label>Expires on (optional)<input name="valid_through" type="date" value="${esc(j.valid_through)}"></label>
+  </div><div class="row" style="margin-top:16px;justify-content:space-between">
+    <div class="row"><button class="btn" value="save">Save</button><button class="btn ghost" value="cancel" formnovalidate>Cancel</button></div>
+    ${j.id ? '<button class="btn danger" value="delete" formnovalidate>Delete</button>' : ''}</div></form>`;
+  document.body.appendChild(d); d.showModal();
+  d.addEventListener('close', async () => {
+    const action = d.returnValue; const data = formData($('form', d)); d.remove();
+    try {
+      if (action === 'save') { await api(`/api/admin/agencies/${agency.id}/jobs${j.id ? '/' + j.id : ''}`, { method: j.id ? 'PUT' : 'POST', body: JSON.stringify(data) }); toast('Job saved'); }
+      else if (action === 'delete' && confirm('Delete this job permanently? (Tip: set status to Closed instead to keep its applicants linked.)')) { await api(`/api/admin/agencies/${agency.id}/jobs/${j.id}`, { method: 'DELETE' }); toast('Job deleted'); }
+      paneJobs();
+    } catch (e) { alert(e.message); }
+  });
+}
+
+// ---------------- Applicants ----------------
+const STAGES = ['new', 'contacted', 'interview', 'hired', 'rejected'];
+async function paneApps() {
+  const pane = $('#pane');
+  const list = await api(`/api/admin/agencies/${agency.id}/applications`);
+  const counts = Object.fromEntries(STAGES.map((s) => [s, list.filter((a) => a.status === s).length]));
+  pane.innerHTML = `<div class="kpis">${STAGES.map((s) => `<div class="card"><b>${counts[s]}</b><span class="muted small" style="text-transform:capitalize">${s}</span></div>`).join('')}</div>
+  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3 style="margin:0">Applicants</h3>
+  <div class="row"><select id="fStage"><option value="">All stages</option>${STAGES.map((s) => `<option>${s}</option>`).join('')}</select><button class="btn ghost sm" id="csv">Export CSV</button></div></div>
+  <div class="tw"><table><thead><tr><th>Applied</th><th>Name</th><th>Contact</th><th>Job</th><th>Qualifications</th><th>Stage</th><th></th></tr></thead><tbody id="rows"></tbody></table></div></div>`;
+  const draw = () => {
+    const f = $('#fStage').value; const rows = list.filter((a) => !f || a.status === f);
+    $('#rows').innerHTML = rows.length ? rows.map((a) => `<tr><td class="small">${esc(a.created_at.slice(0, 16))}</td>
+      <td><b>${esc(a.first_name)} ${esc(a.last_name)}</b>${a.zip ? `<div class="small muted">ZIP ${esc(a.zip)}</div>` : ''}</td>
+      <td class="small"><a href="tel:${esc(a.phone)}">${esc(a.phone)}</a><br>${a.email ? `<a href="mailto:${esc(a.email)}">${esc(a.email)}</a>` : ''}</td>
+      <td class="small">${esc(a.job_title || 'General application')}</td>
+      <td class="small">${esc(a.certifications || '—')}<br><span class="muted">${esc([a.experience && a.experience + ' yrs', a.has_transport === 1 ? '🚗 has car' : a.has_transport === 0 ? 'no car' : ''].filter(Boolean).join(' · '))}</span><br><span class="muted">${esc(a.availability || '')}</span></td>
+      <td><select data-stage="${a.id}">${STAGES.map((s) => `<option ${s === a.status ? 'selected' : ''}>${s}</option>`).join('')}</select></td>
+      <td><div class="row">${a.resume_path ? `<button class="btn ghost sm" data-resume="${a.id}">Resume</button>` : ''}<button class="btn ghost sm" data-view="${a.id}">Details</button></div></td></tr>`).join('')
+      : '<tr><td colspan="7" class="muted">No applicants yet. Share your career page or install the widget to start receiving applications.</td></tr>';
+    pane.querySelectorAll('[data-stage]').forEach((s) => (s.onchange = async () => { await api(`/api/admin/agencies/${agency.id}/applications/${s.dataset.stage}`, { method: 'PATCH', body: JSON.stringify({ status: s.value }) }); list.find((a) => a.id == s.dataset.stage).status = s.value; toast('Stage updated'); }));
+    pane.querySelectorAll('[data-resume]').forEach((b) => (b.onclick = () => download(`/api/admin/agencies/${agency.id}/applications/${b.dataset.resume}/resume`)));
+    pane.querySelectorAll('[data-view]').forEach((b) => (b.onclick = () => appDialog(list.find((a) => a.id == b.dataset.view), paneApps)));
+  };
+  $('#fStage').onchange = draw; $('#csv').onclick = () => download(`/api/admin/agencies/${agency.id}/applications.csv`);
+  draw();
+}
+async function download(path) {
+  const r = await fetch(BASE + path, { headers: { Authorization: 'Bearer ' + token } });
+  if (!r.ok) return alert('Download failed');
+  const name = (r.headers.get('content-disposition') || '').match(/filename="([^"]+)"/)?.[1] || 'download';
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(await r.blob()), download: name }); a.click(); URL.revokeObjectURL(a.href);
+}
+function appDialog(a, after) {
+  const d = document.createElement('dialog');
+  const rows = [['Job', a.job_title || 'General application'], ['Phone', a.phone], ['Email', a.email], ['ZIP', a.zip], ['Certifications', a.certifications], ['Experience', a.experience], ['Availability', a.availability], ['Transportation', a.has_transport == null ? '' : a.has_transport ? 'Yes' : 'No'], ['Message', a.message], ['Applied from', a.source], ['Applied at', a.created_at]];
+  d.innerHTML = `<form method="dialog"><h3 style="margin-top:0">${esc(a.first_name)} ${esc(a.last_name)}</h3>
+    <table>${rows.filter((r) => r[1]).map(([k, v]) => `<tr><th style="width:150px">${k}</th><td style="white-space:pre-wrap">${esc(v)}</td></tr>`).join('')}</table>
+    <label style="margin-top:12px">Internal notes<textarea name="notes" rows="4">${esc(a.notes)}</textarea></label>
+    <div class="row" style="margin-top:14px"><button class="btn" value="save">Save notes</button><button class="btn ghost" value="cancel">Close</button></div></form>`;
+  document.body.appendChild(d); d.showModal();
+  d.addEventListener('close', async () => { const v = d.returnValue, n = formData($('form', d)).notes; d.remove(); if (v === 'save') { await api(`/api/admin/agencies/${agency.id}/applications/${a.id}`, { method: 'PATCH', body: JSON.stringify({ notes: n }) }); toast('Notes saved'); after(); } });
+}
+
+// ---------------- Install ----------------
+function paneInstall() {
+  const s = agency.slug;
+  const block = (title, desc, code) => `<div class="card"><h3 style="margin-top:0">${title}</h3><p class="muted small" style="margin:0">${desc}</p><pre>${esc(code)}</pre><button class="btn ghost sm" data-copy>Copy</button></div>`;
+  $('#pane').innerHTML =
+    block('1. Full job board (recommended)', 'Paste on the agency’s “Careers” / “Join Our Team” page. Works in WordPress (Custom HTML block), Wix (Embed → Custom code), Squarespace (Code block), GoHighLevel / CareFunnels (Custom HTML/JS element), Webflow (Embed) and Duda.', `<div id="hc-jobs" data-agency="${s}"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
+    block('2. “We’re hiring” teaser', 'Shows the 3 newest jobs, e.g. on the homepage or footer. Cards link to the full careers page.', `<div class="hc-jobs" data-agency="${s}" data-limit="3" data-link="https://AGENCY-SITE.com/careers"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
+    block('3. WordPress shortcode', 'Install the included hc-jobs WordPress plugin (wordpress/hc-jobs), then use:', `[hc_jobs agency="${s}"]`) +
+    block('4. Hosted career site (no website access needed)', 'A ready-made, SEO-optimised careers page. Link to it from the agency’s nav menu, or point a subdomain like careers.agency.com at it.', `${BASE}/careers/${s}`) +
+    block('5. Job board syndication feed', 'Submit this XML feed to Indeed, ZipRecruiter, Talent.com, Jooble, etc. so jobs post there automatically and stay in sync.', `${BASE}/feeds/${s}.xml`) +
+    block('6. Sitemap', 'Submit in Google Search Console so Google for Jobs picks up new postings fast.', `${BASE}/sitemaps/${s}.xml`);
+  document.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => { navigator.clipboard.writeText(b.previousElementSibling.textContent); toast('Copied'); }));
+}
+
+// ---------------- Settings ----------------
+function agencyFields(a = {}) {
+  const f = (n, l, extra = '', cls = '') => `<label class="${cls}">${l}<input name="${n}" value="${esc(a[n])}" ${extra}></label>`;
+  return `<div class="grid">${f('name', 'Agency name *', 'required')}${f('slug', 'URL slug', 'placeholder="auto from name"')}${f('website', 'Website', 'type="url" placeholder="https://"')}
+    ${f('phone', 'Recruiting phone')}${f('logo_url', 'Logo URL', 'type="url"')}<label>Brand color<input name="brand_color" type="color" value="${esc(a.brand_color || '#0f6cbd')}"></label>
+    ${f('street', 'Street')}${f('city', 'City')}${f('state', 'State', 'maxlength="2"')}${f('zip', 'ZIP')}
+    <label class="full">About / why work with us<textarea name="about" rows="3">${esc(a.about)}</textarea></label>
+    ${f('webhook_url', 'New applicant webhook URL', 'type="url" placeholder="GoHighLevel / Zapier / Make inbound webhook"', 'full')}
+    ${f('notify_email', 'Hiring manager email (sent in webhook)', 'type="email"', 'full')}</div>`;
+}
+function paneSettings() {
+  $('#pane').innerHTML = `<form class="card" id="setf"><h3 style="margin-top:0">Agency settings</h3>${agencyFields(agency)}<div class="row" style="margin-top:14px"><button class="btn">Save</button></div></form>
+  <div class="card"><h3 style="margin-top:0">Agency access key</h3><p class="muted small">Give this to the agency so they can log in and manage their own jobs and applicants. Keep it private.</p>
+  <pre>${esc(agency.api_key)}</pre>${me.role === 'super' ? '<div class="row"><button class="btn ghost sm" id="rot">Rotate key</button><button class="btn danger sm" id="del">Delete agency</button></div>' : ''}</div>`;
+  $('#setf').onsubmit = async (e) => { e.preventDefault(); try { const u = await api(`/api/admin/agencies/${agency.id}`, { method: 'PUT', body: JSON.stringify(formData(e.target)) }); Object.assign(agency, u); toast('Saved'); render(); } catch (x) { alert(x.message); } };
+  $('#rot') && ($('#rot').onclick = async () => { if (!confirm('Rotate key? The old key stops working immediately.')) return; Object.assign(agency, await api(`/api/admin/agencies/${agency.id}/rotate-key`, { method: 'POST' })); paneSettings(); });
+  $('#del') && ($('#del').onclick = async () => { if (prompt(`Type ${agency.slug} to permanently delete this agency, its jobs and applicants`) !== agency.slug) return; await api(`/api/admin/agencies/${agency.id}`, { method: 'DELETE' }); localStorage.removeItem('hcj_agency'); boot(); });
+}
+function agencyDialog() {
+  const d = document.createElement('dialog');
+  d.innerHTML = `<form method="dialog"><h3 style="margin-top:0">New agency</h3>${agencyFields()}<div class="row" style="margin-top:14px"><button class="btn" value="save">Create</button><button class="btn ghost" value="cancel" formnovalidate>Cancel</button></div></form>`;
+  document.body.appendChild(d); d.showModal();
+  d.addEventListener('close', async () => {
+    const v = d.returnValue, data = formData($('form', d)); d.remove(); if (v !== 'save') return;
+    try { const a = await api('/api/admin/agencies', { method: 'POST', body: JSON.stringify(data) }); localStorage.setItem('hcj_agency', a.id); tab = 'install'; toast('Agency created'); boot(); } catch (e) { alert(e.message); }
+  });
+}
+boot();
+</script>
+</body>
+</html>
