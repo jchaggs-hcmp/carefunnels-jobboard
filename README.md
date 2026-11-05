@@ -35,6 +35,29 @@ Every job's apply step and the general application then show that form, so submi
 
 How it works: the pasted HTML is never shown to visitors as-is. The server pulls out and checks the form URL (https only), the form ID and the `data-*` layout attributes, then the widget builds its own iframe from those. The iframe is placed in the page's normal DOM through a `<slot>`, so CareFunnels' `form_embed.js` can find it to auto-size it and track it. If no CareFunnels form is set, the built-in form and webhook are used.
 
+## Client careers domains (job URLs on the client's own domain)
+
+Each agency can have its careers site on **its own subdomain**, such as `careers.sunrisehomecare.com`:
+
+| Page | URL |
+|---|---|
+| Careers home | `https://careers.sunrisehomecare.com/` |
+| Job page | `https://careers.sunrisehomecare.com/jobs/caregiver-personal-care-aide` |
+| Sitemap (submit in the client's Search Console) | `https://careers.sunrisehomecare.com/sitemap.xml` |
+| Indeed / job board feed | `https://careers.sunrisehomecare.com/feed.xml` |
+
+**Setup for each client:**
+1. In Admin, go to **Agency settings → Careers domain** and enter `careers.<theirdomain>.com`.
+2. Ask whoever manages the client's domain to add the DNS record shown on **Install on website**: `CNAME  careers → <your platform domain>`. On Cloudflare, set it to *DNS only*.
+3. That's it. HTTPS is issued automatically, and the platform re-checks pending domains every 10 minutes. The domain shows **live** once the record works, or click **Check now**.
+
+**What changes when the domain goes live:**
+- Google for Jobs data, the Indeed feed, the sitemap and every job link switch to the client's domain.
+- Old platform URLs (`/careers/<slug>/…`, `/feeds/…`, `/sitemaps/…`) 301-redirect there, so nothing breaks.
+- Copies of the widget embedded on the client's main website stop adding Google for Jobs data, so Google sees exactly one posting per job, on the careers domain.
+- Until the domain is verified, links stay on the platform URL. Google and Indeed are never handed a domain that doesn't work yet.
+- The admin panel can't be reached on client domains. They only serve the careers site, the widget and the public API.
+
 ## Run it
 
 ```bash
@@ -58,20 +81,28 @@ npm run seed   # optional demo agency "sunrise-home-care"
 | `PORT` | 3000 | |
 | `DB_PATH` | `data/jobs.db` | SQLite file |
 | `UPLOAD_DIR` | `data/uploads` | Resume storage |
+| `DOMAIN_TARGET` | host of `BASE_URL` | What client CNAME records point to |
 
-### Deploy
+### Deploy (recommended: one VPS with Docker)
 
-Any host that runs Node or Docker and has a persistent disk works: Render, Railway, Fly.io or a VPS.
+Client careers domains need a certificate for every client hostname, so the recommended setup is a small VPS (DigitalOcean, Hetzner, Lightsail and so on, about $6–12/month) running `deploy/docker-compose.yml`. It runs the app plus **Caddy**, which issues free Let's Encrypt certificates on demand. Caddy asks the app (`/internal/tls-allowed`) first, and only gets a yes for domains saved on an agency.
+
+1. Point `jobs.yourdomain.com` (an A record) at the server's IP.
+2. Copy and edit the environment file:
 
 ```bash
-docker build -t hc-jobs .
+cp deploy/.env.example deploy/.env
 ```
+
+3. Start it:
 
 ```bash
-docker run -p 3000:3000 -v hcjobs:/data -e ADMIN_TOKEN=... -e BASE_URL=https://jobs.yourdomain.com hc-jobs
+docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
 ```
 
-Put it behind HTTPS (the host's TLS, or Caddy/nginx). Back up `/data`.
+Back up the `jobdata` volume, which holds the database and resumes.
+
+Managed hosts (Render, Railway, Fly.io) also work, but you'd add every client domain in their dashboard by hand, and some cap how many custom domains you can have.
 
 ## Onboarding a new agency (about 5 minutes)
 

@@ -6,9 +6,10 @@ const crypto = require('node:crypto');
 const { agencies, jobs, applications } = require('./lib/db');
 const render = require('./lib/render');
 const { parseFormEmbed, resolveApplyForm } = require('./lib/forms');
+const U = require('./lib/urls');
+const dns = require('node:dns').promises;
 
-const PORT = Number(process.env.PORT || 3000);
-const BASE_URL = (process.env.BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+const { PORT, BASE_URL } = U;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(__dirname, 'data', 'uploads');
 const MAX_BODY = 8 * 1024 * 1024; // 8MB JSON (resume base64 ≈ 5MB file)
@@ -64,13 +65,18 @@ const publicJob = (j, agency) => ({
   city: j.city || agency.city, state: j.state || agency.state, zip: j.zip || agency.zip,
   pay_min: j.pay_min, pay_max: j.pay_max, pay_unit: j.pay_unit, pay_text: render.payText(j),
   shifts: j.shifts, summary: j.summary, posted_at: j.posted_at, valid_through: j.valid_through,
-  url: `${BASE_URL}/careers/${agency.slug}/${j.slug}`,
+  url: U.job(agency, j),
 });
 const publicAgency = (a) => ({ apply_form: resolveApplyForm(a, null), slug: a.slug, name: a.name, website: a.website, logo_url: a.logo_url, brand_color: a.brand_color, phone: a.phone, city: a.city, state: a.state, about: a.about });
 const adminAgency = (a, showKey) => (showKey ? a : { ...a, api_key: undefined });
 
 /** Validates a pasted CareFunnels form embed before saving (throws 400 with a helpful message). */
-function validateForm(body) { if (body.apply_form_embed) parseFormEmbed(body.apply_form_embed); return body; }
+function validateForm(body) {
+  if (body.apply_form_embed) parseFormEmbed(body.apply_form_embed);
+  if ('custom_domain' in body) body.custom_domain = U.normalizeDomain(body.custom_domain) || '';
+  return body;
+}
+const conflict = (e) => { if (/UNIQUE/.test(e.message)) throw new HttpError(409, /custom_domain/.test(e.message) ? 'That careers domain is already used by another agency' : 'That slug is already taken'); throw e; };
 const clean = (v, max = 500) => (v == null ? null : String(v).trim().slice(0, max) || null);
 
 async function notifyWebhook(agency, app, job) {
@@ -78,7 +84,7 @@ async function notifyWebhook(agency, app, job) {
   const payload = {
     event: 'application.created',
     agency: { slug: agency.slug, name: agency.name, notify_email: agency.notify_email },
-    job: job ? { id: job.id, title: job.title, url: `${BASE_URL}/careers/${agency.slug}/${job.slug}` } : null,
+    job: job ? { id: job.id, title: job.title, url: U.job(agency, job) } : null,
     applicant: {
       id: app.id, first_name: app.first_name, last_name: app.last_name, full_name: `${app.first_name} ${app.last_name}`,
       email: app.email, phone: app.phone, zip: app.zip, certifications: app.certifications, experience: app.experience,
@@ -111,7 +117,7 @@ const STATIC = { '/embed.js': ['public/embed.js', 'application/javascript; chars
 for (const [p, [file, type]] of Object.entries(STATIC)) {
   route('GET', p === '/' ? '/' : p, (req, res) => send(res, 200, fs.readFileSync(path.join(__dirname, file)), type, { ...cors, 'Cache-Control': p === '/embed.js' ? 'public, max-age=300' : 'no-cache' }));
 }
-route('GET', '/healthz', (req, res) => send(res, 200, { ok: true }));
+route('GET', '/healthz', (req, res) => send(res, 200, { ok: true, agency: agencies.byDomain(U.hostOf(req))?.slug || null }));
 
 // ---- public JSON API (used by the embed widget) ----
 route('GET', '/api/public/:agency', (req, res, p) => {
@@ -126,7 +132,7 @@ route('GET', '/api/public/:agency/jobs/:job', (req, res, p) => {
   send(res, 200, {
     agency: publicAgency(a),
     job: { ...publicJob(j, a), is_open: j.status === 'open', description_html: render.fullDescriptionHtml(j, a), apply_form: resolveApplyForm(a, j) },
-    jsonld: j.status === 'open' ? render.jobPostingJsonLd(j, a, BASE_URL) : null,
+    jsonld: j.status === 'open' && !U.live(a) ? render.jobPostingJsonLd(j, a) : null, // with a live careers domain, Google gets it there only
   }, undefined, { ...cors, 'Cache-Control': 'public, max-age=60' });
 });
 
@@ -165,40 +171,51 @@ route('POST', '/api/public/:agency/apply', async (req, res, p) => {
 });
 
 // ---- hosted career site + feeds ----
-route('GET', '/careers/:agency', (req, res, p) => {
-  const a = agencies.bySlug(p.agency); if (!a) throw new HttpError(404, 'Not found');
-  send(res, 200, render.careerIndexPage(a, jobs.list(a.id, { status: 'public' }), BASE_URL), 'text/html; charset=utf-8');
-});
-route('GET', '/careers/:agency/:job', (req, res, p) => {
-  const a = agencies.bySlug(p.agency); if (!a) throw new HttpError(404, 'Not found');
-  const j = jobs.get(a.id, p.job); if (!j || j.status === 'draft') throw new HttpError(404, 'Not found');
-  send(res, 200, render.careerJobPage(a, j, BASE_URL), 'text/html; charset=utf-8');
-});
-route('GET', '/feeds/:agency.xml', (req, res, p) => {
-  const a = agencies.bySlug(p.agency); if (!a) throw new HttpError(404, 'Not found');
-  send(res, 200, render.xmlFeed(a, jobs.list(a.id, { status: 'public' }), BASE_URL), 'application/xml; charset=utf-8');
-});
-route('GET', '/sitemaps/:agency.xml', (req, res, p) => {
-  const a = agencies.bySlug(p.agency); if (!a) throw new HttpError(404, 'Not found');
-  send(res, 200, render.sitemap(a, jobs.list(a.id, { status: 'public' }), BASE_URL), 'application/xml; charset=utf-8');
+// Platform-host URLs. Once an agency's own careers domain is live these 301 to it, so there is one canonical copy.
+const redirect = (res, to) => { res.writeHead(301, { Location: to, 'Cache-Control': 'public, max-age=3600' }); res.end(); };
+const html = 'text/html; charset=utf-8', xml = 'application/xml; charset=utf-8';
+const findPublicJob = (a, slug) => { const j = jobs.get(a.id, slug); if (!j || j.status === 'draft') throw new HttpError(404, 'Not found'); return j; };
+const pages = {
+  home: (res, a) => send(res, 200, render.careerIndexPage(a, jobs.list(a.id, { status: 'public' })), html),
+  job: (res, a, slug) => send(res, 200, render.careerJobPage(a, findPublicJob(a, slug)), html),
+  feed: (res, a) => send(res, 200, render.xmlFeed(a, jobs.list(a.id, { status: 'public' })), xml),
+  sitemap: (res, a) => send(res, 200, render.sitemap(a, jobs.list(a.id, { status: 'public' })), xml),
+};
+const agencyOr404 = (slug) => { const a = agencies.bySlug(slug); if (!a) throw new HttpError(404, 'Not found'); return a; };
+route('GET', '/careers/:agency', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.home(a)) : pages.home(res, a); });
+route('GET', '/careers/:agency/:job', (req, res, p) => { const a = agencyOr404(p.agency); if (U.live(a)) return redirect(res, U.job(a, findPublicJob(a, p.job))); pages.job(res, a, p.job); });
+route('GET', '/feeds/:agency.xml', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.feed(a)) : pages.feed(res, a); });
+route('GET', '/sitemaps/:agency.xml', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.sitemap(a)) : pages.sitemap(res, a); });
+route('GET', '/robots.txt', (req, res) => send(res, 200, 'User-agent: *\nDisallow: /admin\nDisallow: /api/\n', 'text/plain; charset=utf-8'));
+
+// Caddy on-demand TLS asks this before issuing a certificate: only for domains that belong to an agency.
+route('GET', '/internal/tls-allowed', (req, res, p, url) => {
+  const d = String(url.searchParams.get('domain') || '').toLowerCase();
+  send(res, d === U.BASE_HOST || agencies.byDomain(d) ? 200 : 404, d ? 'ok' : 'missing domain', 'text/plain');
 });
 
 // ---- admin API ----
 route('GET', '/api/admin/me', (req, res) => {
-  if (isSuper(req)) return send(res, 200, { role: 'super', agencies: agencies.all().map((a) => adminAgency(a, true)) });
+  const platform = { domain_target: U.DOMAIN_TARGET, base_url: BASE_URL };
+  if (isSuper(req)) return send(res, 200, { role: 'super', platform, agencies: agencies.all().map((a) => adminAgency(a, true)) });
   const a = authAgency(req, null);
-  send(res, 200, { role: 'agency', agencies: [adminAgency(a, true)] });
+  send(res, 200, { role: 'agency', platform, agencies: [adminAgency(a, true)] });
 });
 route('POST', '/api/admin/agencies', async (req, res) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
   const b = await readJson(req);
   if (!b.name) throw new HttpError(400, 'name is required');
-  try { send(res, 201, agencies.create(validateForm(b))); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
+  let created; try { created = agencies.create(validateForm(b)); } catch (e) { conflict(e); }
+  send(res, 201, created); if (created.custom_domain) verifyDomain(created).catch(() => {});
 });
 route('PUT', '/api/admin/agencies/:id', async (req, res, p) => {
   const a = authAgency(req, p.id);
-  try { send(res, 200, agencies.update(a.id, validateForm(await readJson(req)))); } catch (e) { if (/UNIQUE/.test(e.message)) throw new HttpError(409, 'That slug is already taken'); throw e; }
+  const body = validateForm(await readJson(req));
+  let updated; try { updated = agencies.update(a.id, body); } catch (e) { conflict(e); }
+  send(res, 200, updated);
+  if (updated.custom_domain && !updated.domain_verified_at) verifyDomain(updated).catch(() => {});
 });
+route('GET', '/api/admin/agencies/:id/domain-status', async (req, res, p) => send(res, 200, await verifyDomain(authAgency(req, p.id))));
 route('POST', '/api/admin/agencies/:id/rotate-key', (req, res, p) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
   send(res, 200, agencies.rotateKey(authAgency(req, p.id).id));
@@ -237,11 +254,56 @@ route('GET', '/api/admin/agencies/:id/applications/:app/resume', (req, res, p) =
   send(res, 200, fs.readFileSync(file), type, { 'Content-Disposition': `attachment; filename="${(app.resume_name || 'resume' + ext).replace(/["\r\n]/g, '')}"` });
 });
 
+// ---------------- custom careers domains ----------------
+/** Checks DNS and that https://<domain> actually reaches this server for this agency; marks the domain verified once it does. */
+async function verifyDomain(a) {
+  const out = { domain: a.custom_domain, target: U.DOMAIN_TARGET, dns: null, https: false, verified: !!a.domain_verified_at, careers_url: U.home(a) };
+  if (!a.custom_domain) return out;
+  const settle = (p) => p.then((v) => v, () => []);
+  const [cname, addrs, targetAddrs] = await Promise.all([settle(dns.resolveCname(a.custom_domain)), settle(dns.resolve4(a.custom_domain)), settle(dns.resolve4(U.DOMAIN_TARGET))]);
+  out.dns = {
+    cname: cname[0] || null, addresses: addrs,
+    points_here: cname.some((c) => c.toLowerCase().replace(/\.$/, '') === U.DOMAIN_TARGET) || addrs.some((x) => targetAddrs.includes(x)),
+  };
+  try {
+    const r = await fetch(`${U.CUSTOM_SCHEME}://${a.custom_domain}/healthz`, { signal: AbortSignal.timeout(6000), redirect: 'manual' });
+    out.https = r.ok && (await r.json()).agency === a.slug;
+  } catch { out.https = false; }
+  if (out.https && !a.domain_verified_at) a = agencies.setDomainVerified(a.id, true);
+  out.verified = !!a.domain_verified_at; out.careers_url = U.home(a);
+  return out;
+}
+// Re-check unverified domains every 10 minutes so they switch on by themselves once the client's DNS propagates.
+function checkPendingDomains() { for (const a of agencies.all()) if (a.custom_domain && !a.domain_verified_at) verifyDomain(a).catch(() => {}); }
+if (require.main === module) { setTimeout(checkPendingDomains, 5000).unref(); setInterval(checkPendingDomains, 10 * 60 * 1000).unref(); }
+
+/** Requests arriving on an agency's own careers domain (careers.agency.com) get that agency's site at the root. */
+function handleAgencyHost(a, req, res, pathname) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
+  let m;
+  if (pathname === '/') return pages.home(res, a), true;
+  if ((m = pathname.match(/^\/jobs\/([^/]+)\/?$/))) return pages.job(res, a, m[1]), true;
+  if (pathname === '/sitemap.xml') return pages.sitemap(res, a), true;
+  if (pathname === '/feed.xml') return pages.feed(res, a), true;
+  if (pathname === '/robots.txt') return send(res, 200, `User-agent: *\nAllow: /\nSitemap: ${U.CUSTOM_SCHEME}://${a.custom_domain}/sitemap.xml\n`, 'text/plain; charset=utf-8'), true;
+  if ((m = pathname.match(/^\/careers\/[^/]+(?:\/([^/]+))?\/?$/))) return redirect(res, m[1] ? `/jobs/${m[1]}` : '/'), true;
+  return false;
+}
+// On an agency domain only the public site, widget script, public API and health check are reachable — never the admin.
+const AGENCY_HOST_PASSTHROUGH = /^\/(embed\.js|healthz|api\/public\/)/;
+
 // ---------------- server ----------------
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
   const pathname = decodeURIComponent(url.pathname);
+  const host = U.hostOf(req);
+  const hostAgency = host && host !== U.BASE_HOST ? agencies.byDomain(host) : null;
+  if (hostAgency) {
+    try { if (handleAgencyHost(hostAgency, req, res, pathname)) return; }
+    catch (e) { return send(res, e.status || 500, `<h1>${e.status === 404 ? 'Page not found' : 'Error'}</h1><p><a href="/">See open positions</a></p>`, html); }
+    if (!AGENCY_HOST_PASSTHROUGH.test(pathname)) return send(res, 404, '<h1>Page not found</h1><p><a href="/">See open positions</a></p>', html);
+  }
   for (const r of routes) {
     if (r.method !== req.method) continue;
     const m = pathname.match(r.re); if (!m) continue;

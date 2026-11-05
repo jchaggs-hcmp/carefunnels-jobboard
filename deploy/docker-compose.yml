@@ -1,0 +1,28 @@
+# One-server deployment: job board + Caddy (automatic HTTPS for every client domain).
+#   1. Point jobs.yourdomain.com (A record) at this server's IP.
+#   2. cp deploy/.env.example deploy/.env  and fill it in.
+#   3. docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d --build
+services:
+  app:
+    build: ..
+    restart: unless-stopped
+    environment:
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      BASE_URL: https://${PLATFORM_DOMAIN}
+      DOMAIN_TARGET: ${PLATFORM_DOMAIN}
+    volumes:
+      - jobdata:/data
+  caddy:
+    image: caddy:2.8
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      PLATFORM_DOMAIN: ${PLATFORM_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [app]
+volumes:
+  jobdata:
+  caddydata:

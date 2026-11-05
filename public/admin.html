@@ -60,6 +60,14 @@ async function api(path, opts = {}) {
   if (!r.ok) throw new Error(b.error || 'Request failed');
   return b;
 }
+// Public URLs for an agency (mirrors lib/urls.js): its own careers domain once verified, else the platform fallback.
+const live = (a) => !!(a.custom_domain && a.domain_verified_at);
+const U = {
+  home: (a) => (live(a) ? `https://${a.custom_domain}/` : `${BASE}/careers/${a.slug}`),
+  job: (a, j) => (live(a) ? `https://${a.custom_domain}/jobs/${j.slug}` : `${BASE}/careers/${a.slug}/${j.slug}`),
+  feed: (a) => (live(a) ? `https://${a.custom_domain}/feed.xml` : `${BASE}/feeds/${a.slug}.xml`),
+  sitemap: (a) => (live(a) ? `https://${a.custom_domain}/sitemap.xml` : `${BASE}/sitemaps/${a.slug}.xml`),
+};
 function logout() { token = ''; localStorage.removeItem('hcj_token'); me = agency = null; render(); }
 const formData = (form) => Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, typeof v === 'string' ? v.trim() : v]));
 
@@ -82,7 +90,7 @@ function render() {
   app.innerHTML = `<header><div class="top"><b>🏠 Job Board</b>
     ${me.role === 'super' ? `<select id="agencySel" aria-label="Agency">${me.agencies.map((a) => `<option value="${a.id}" ${a.id === agency?.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select>
       <button class="btn ghost sm" id="newAgency">+ New agency</button>` : `<span>${esc(agency?.name)}</span>`}
-    <span class="sp"></span>${agency ? `<a class="small" href="${BASE}/careers/${esc(agency.slug)}" target="_blank" rel="noopener">View career site ↗</a>` : ''}
+    <span class="sp"></span>${agency ? `<a class="small" href="${esc(U.home(agency))}" target="_blank" rel="noopener">View career site ↗</a>` : ''}
     <button class="btn ghost sm" id="logout">Sign out</button></div></header>
     <main>${agency ? `<nav class="tabs">${[['jobs', 'Jobs'], ['apps', 'Applicants'], ['install', 'Install on website'], ['settings', 'Agency settings']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav><div id="pane"></div>`
       : `<div class="card"><h3>No agencies yet</h3><p>Create your first agency to get started.</p><button class="btn" id="newAgency2">+ New agency</button></div>`}</main>`;
@@ -107,7 +115,7 @@ async function paneJobs() {
     <td>${esc([j.city, j.state].filter(Boolean).join(', '))}</td><td>${j.pay_min != null ? '$' + j.pay_min + (j.pay_max && j.pay_max !== j.pay_min ? '–$' + j.pay_max : '') + '/' + (j.pay_unit || 'HOUR').toLowerCase() : ''}</td>
     <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td><td>${j.applicant_count}</td>
     <td><div class="row"><button class="btn ghost sm" data-edit="${j.id}">Edit</button><button class="btn ghost sm" data-dup="${j.id}">Duplicate</button>
-    ${j.status === 'open' ? `<a class="btn ghost sm" style="text-decoration:none" target="_blank" rel="noopener" href="${BASE}/careers/${esc(agency.slug)}/${esc(j.slug)}">View</a>` : ''}</div></td></tr>`).join('')}
+    ${j.status === 'open' ? `<a class="btn ghost sm" style="text-decoration:none" target="_blank" rel="noopener" href="${esc(U.job(agency, j))}">View</a>` : ''}</div></td></tr>`).join('')}
   </tbody></table></div>` : '<p class="muted">No jobs yet. Post your first caregiver opening.</p>'}</div>`;
   $('#addJob').onclick = () => jobDialog({ status: 'open', pay_unit: 'HOUR', employment_type: 'PART_TIME', category: 'Caregiver', city: agency.city, state: agency.state, zip: agency.zip });
   pane.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => jobDialog(list.find((j) => j.id == b.dataset.edit))));
@@ -195,7 +203,18 @@ function appDialog(a, after) {
 function paneInstall() {
   const s = agency.slug;
   const block = (title, desc, code) => `<div class="card"><h3 style="margin-top:0">${title}</h3><p class="muted small" style="margin:0">${desc}</p><pre>${esc(code)}</pre><button class="btn ghost sm" data-copy>Copy</button></div>`;
-  $('#pane').innerHTML =
+  const target = me.platform?.domain_target || location.hostname;
+  const sub = agency.custom_domain ? agency.custom_domain.split('.')[0] : 'careers';
+  const domainCard = agency.custom_domain
+    ? `<div class="card" id="domainCard"><h3 style="margin-top:0">Careers domain: ${esc(agency.custom_domain)} <span id="dstat">${live(agency) ? '<span class="pill open">live</span>' : '<span class="pill draft">checking…</span>'}</span></h3>
+        <p class="small" style="margin:0 0 6px">Every job link (Google for Jobs, Indeed, the sitemap and shared links) uses this domain once it’s live, e.g. <b>https://${esc(agency.custom_domain)}/jobs/caregiver</b>.</p>
+        <p class="small muted" style="margin:0">Ask whoever manages the client’s domain (GoDaddy, Cloudflare, Namecheap, Google/Squarespace Domains, etc.) to add this DNS record:</p>
+        <div class="tw"><table style="margin:8px 0;max-width:640px"><thead><tr><th>Type</th><th>Name / Host</th><th>Value / Points to</th><th>TTL</th></tr></thead>
+          <tbody><tr><td><b>CNAME</b></td><td><code>${esc(sub)}</code></td><td><code>${esc(target)}</code></td><td>Auto / 1 hour</td></tr></tbody></table></div>
+        <p class="small muted" style="margin:0 0 8px">If it’s on Cloudflare, set the record to <b>DNS only</b> (grey cloud). HTTPS is set up automatically within a few minutes of the record working, and this page switches to <b>live</b> by itself.</p>
+        <div id="dinfo" class="small"></div><button class="btn ghost sm" id="dcheck" style="margin-top:8px">Check now</button></div>`
+    : `<div class="card"><h3 style="margin-top:0">Careers domain <span class="pill draft">not set</span></h3><p class="small" style="margin:0">Give this client their own careers address like <b>careers.${esc((agency.website || 'agency.com').replace(/^https?:\/\/(www\.)?/, '').split('/')[0])}</b> so job links live on their domain. Add it in <b>Agency settings → Careers domain</b>.</p></div>`;
+  $('#pane').innerHTML = domainCard +
     block('1. Full job board (recommended)', 'Paste on the agency’s “Careers” / “Join Our Team” page. Works in WordPress (Custom HTML block), Wix (Embed → Custom code), Squarespace (Code block), GoHighLevel / CareFunnels (Custom HTML/JS element), Webflow (Embed) and Duda.', `<div id="hc-jobs" data-agency="${s}"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
     block('2. “We’re hiring” teaser', 'Shows the 3 newest jobs, e.g. on the homepage or footer. Cards link to the full careers page.', `<div class="hc-jobs" data-agency="${s}" data-limit="3" data-link="https://AGENCY-SITE.com/careers"></div>\n<script src="${BASE}/embed.js" defer><\/script>`) +
     `<div class="card"><h3 style="margin-top:0">Applications → CareFunnels ${agency.apply_form_embed ? '<span class="pill open">connected</span>' : '<span class="pill draft">using built-in form</span>'}</h3>
@@ -203,9 +222,25 @@ function paneInstall() {
       <p class="small muted" style="margin:0">To know which job someone applied for, add <b>Hidden</b> fields to the CareFunnels form with these Query Keys (they fill in automatically):</p>
       <pre>job_title  job_id  job_location  job_category  job_url  application_source  utm_source  utm_medium  utm_campaign  gclid  fbclid</pre></div>` +
     block('3. WordPress shortcode', 'Install the included hc-jobs WordPress plugin (wordpress/hc-jobs), then use:', `[hc_jobs agency="${s}"]`) +
-    block('4. Hosted career site (no website access needed)', 'A ready-made, SEO-optimised careers page. Link to it from the agency’s nav menu, or point a subdomain like careers.agency.com at it.', `${BASE}/careers/${s}`) +
-    block('5. Job board syndication feed', 'Submit this XML feed to Indeed, ZipRecruiter, Talent.com, Jooble, etc. so jobs post there automatically and stay in sync.', `${BASE}/feeds/${s}.xml`) +
-    block('6. Sitemap', 'Submit in Google Search Console so Google for Jobs picks up new postings fast.', `${BASE}/sitemaps/${s}.xml`);
+    block('4. Careers site', live(agency) ? 'The client’s careers site on their own domain. Link to it from their main website’s menu.' : 'Ready-made careers page. Link to it from the agency’s menu. (Moves to the client’s careers domain automatically once that’s live.)', U.home(agency)) +
+    block('5. Job board syndication feed', 'Submit this XML feed to Indeed, ZipRecruiter, Talent.com, Jooble, etc. so jobs post there automatically and stay in sync.', U.feed(agency)) +
+    block('6. Sitemap', live(agency) ? 'Submit in the client’s Google Search Console (the careers subdomain property) so Google for Jobs picks up new postings fast.' : 'Submit in Google Search Console so Google for Jobs picks up new postings fast.', U.sitemap(agency));
+  if (agency.custom_domain) {
+    const check = async () => {
+      $('#dinfo').textContent = 'Checking…';
+      try {
+        const r = await api(`/api/admin/agencies/${agency.id}/domain-status`);
+        const was = live(agency); agency.domain_verified_at = r.verified ? agency.domain_verified_at || 'now' : agency.domain_verified_at;
+        $('#dstat').innerHTML = r.verified ? '<span class="pill open">live</span>' : '<span class="pill draft">waiting for DNS</span>';
+        $('#dinfo').innerHTML = [
+          `DNS record: ${r.dns?.points_here ? '✅ points to the platform' : r.dns?.cname || r.dns?.addresses?.length ? `⚠ points somewhere else (${esc(r.dns.cname || r.dns.addresses.join(', '))})` : '⏳ not found yet (can take a few minutes to a few hours)'}`,
+          `HTTPS: ${r.https ? '✅ working' : '⏳ not yet'}`,
+        ].join('<br>');
+        if (r.verified && !was) { toast('Careers domain is live'); paneInstall(); }
+      } catch (e) { $('#dinfo').textContent = e.message; }
+    };
+    $('#dcheck').onclick = check; if (!live(agency)) check();
+  }
   document.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => { navigator.clipboard.writeText(b.previousElementSibling.textContent); toast('Copied'); }));
 }
 
@@ -216,6 +251,7 @@ function agencyFields(a = {}) {
     ${f('phone', 'Recruiting phone')}${f('logo_url', 'Logo URL', 'type="url"')}<label>Brand color<input name="brand_color" type="color" value="${esc(a.brand_color || '#0f6cbd')}"></label>
     ${f('street', 'Street')}${f('city', 'City')}${f('state', 'State', 'maxlength="2"')}${f('zip', 'ZIP')}
     <label class="full">About / why work with us<textarea name="about" rows="3">${esc(a.about)}</textarea></label>
+    ${f('custom_domain', 'Careers domain (client’s own subdomain)', 'placeholder="careers.agencyname.com"', 'full')}
     ${f('webhook_url', 'New applicant webhook URL', 'type="url" placeholder="GoHighLevel / Zapier / Make inbound webhook"', 'full')}
     ${f('notify_email', 'Hiring manager email (sent in webhook)', 'type="email"', 'full')}
     <fieldset class="full" style="border:1px solid var(--line);border-radius:8px;padding:12px"><legend style="font-weight:600;font-size:13px;padding:0 4px">CareFunnels application form</legend>

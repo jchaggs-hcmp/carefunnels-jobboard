@@ -1,0 +1,26 @@
+# Caddy sits in front of the job board and issues a free HTTPS certificate (Let's Encrypt)
+# for the platform domain AND for every client careers domain, automatically.
+#
+# Before issuing a cert for an unknown hostname, Caddy asks the app (/internal/tls-allowed),
+# which only says yes for domains saved on an agency — so nobody can make you issue random certs.
+{
+	email {$ACME_EMAIL}
+	on_demand_tls {
+		ask http://app:3000/internal/tls-allowed
+	}
+}
+
+# Platform domain (admin, embed.js, API, fallback career pages)
+{$PLATFORM_DOMAIN} {
+	encode gzip
+	reverse_proxy app:3000
+}
+
+# Every client careers domain (careers.agencyname.com → CNAME → platform domain)
+https:// {
+	tls {
+		on_demand
+	}
+	encode gzip
+	reverse_proxy app:3000
+}
