@@ -23,7 +23,7 @@ It has no dependencies: Node 22.13+ and the built-in SQLite. There's no build st
 
 For clients whose website is WordPress with **WP Job Manager**:
 
-1. Your team enters jobs in the client's **CareFunnels sub-account** as **Jobs** custom-object records. See [docs/carefunnels-job-object.md](docs/carefunnels-job-object.md) for the object and its fields.
+1. Your team enters jobs in the client's **CareFunnels sub-account** as **Job Openings** custom-object records. See [docs/carefunnels-job-object.md](docs/carefunnels-job-object.md) for the object and its fields.
 2. The hub reads them every 5 minutes, or instantly through a CareFunnels workflow webhook.
 3. It publishes them on the client's WordPress site as WP Job Manager listings, so job URLs are on the client's own domain (e.g. `clientsite.com/job/caregiver/`).
 4. The client's **CareFunnels application form** is shown on each job page, and the live job URL is written back onto the CareFunnels record.

@@ -11,12 +11,12 @@ const cfServer = http.createServer((req, res) => {
   let body = ''; req.on('data', (c) => (body += c)); req.on('end', () => {
     cfState.auth = req.headers.authorization;
     if (cfState.fail) { res.writeHead(500); return res.end('{"message":"boom"}'); }
-    if (req.method === 'POST' && req.url === '/objects/custom_objects.jobs/records/search') {
+    if (req.method === 'POST' && req.url === '/objects/custom_objects.job_openings/records/search') {
       const b = JSON.parse(body); cfState.lastSearch = b;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ records: cfState.records, total: cfState.records.length }));
     }
-    const m = req.url.match(/^\/objects\/custom_objects\.jobs\/records\/([^?]+)\?locationId=(.+)$/);
+    const m = req.url.match(/^\/objects\/custom_objects\.job_openings\/records\/([^?]+)\?locationId=(.+)$/);
     if (req.method === 'PUT' && m) { cfState.updates.push({ id: m[1], locationId: m[2], body: JSON.parse(body) }); res.writeHead(200); return res.end('{"record":{}}'); }
     res.writeHead(404); res.end('{}');
   });
@@ -68,7 +68,7 @@ test('CareFunnels → WordPress sync', async (t) => {
 
   await t.test('new CareFunnels jobs are published to WordPress and the live URL is written back', async () => {
     cfState.records = [
-      rec('r1', { job_title: 'Caregiver', status: 'open', category: 'caregiver', employment_type: 'part_time', pay_min: '16', pay_max: 19, pay_per: 'hour', shifts: ['weekends', 'evenings'], description: 'Help seniors.\n\n- Meals\n- Companionship' }),
+      rec('r1', { job_title: 'Caregiver', status: 'open', category: 'caregiver', employment_type: 'part_time', pay_min: '16', pay_max: 19, pay_per: 'hour', shifts: ['weekends', 'evenings'], job_description: 'Help seniors.\n\n- Meals\n- Companionship' }),
       rec('r2', { job_title: 'CNA', status: { value: 'open' }, employment_type: 'Full-time', city: 'Dublin', pay_min: 21, expires_on: '2099-01-31' }),
       rec('r3', { job_title: 'Office Manager', status: 'draft' }),
     ];
@@ -137,6 +137,23 @@ test('CareFunnels → WordPress sync', async (t) => {
     agencies.update(a.id, { wp_app_password: 'abcd efgh ijkl mnop' });
     const r2 = await sync.syncAgency(a.id);
     assert.deepEqual(r2.errors, []); assert.equal(wpState.posts.get('r5').status, 'publish');
+  });
+
+  await t.test('a real record read from CareFunnels Parser maps correctly', () => {
+    // Exactly as returned by POST /objects/custom_objects.job_openings/records/search on 2026-11-08
+    const real = { id: '6af07454ca8fb21bc4df6abb', objectKey: 'custom_objects.job_openings', properties: {
+      benefits: '- Weekly pay', category: 'caregiver', city: 'Columbus', employment_type: 'part_time', expires_on: '2026-12-31',
+      job_description: 'Help seniors stay independent at home.\n\n- Companionship\n- Meal preparation', job_title: 'TEST – Caregiver (sync test)',
+      pay_max: 19, pay_min: 16, pay_per: 'hour', requirements: '- 18+\n- Background check', shifts: ['weekends', 'evenings'], state: 'OH',
+      status: 'draft', summary: 'Test record for the job sync. Safe to delete.', zip: '43215' } };
+    const { job, problems } = require('../lib/carefunnels').recordToJob(real);
+    assert.deepEqual(problems, []);
+    assert.deepEqual(job, {
+      title: 'TEST – Caregiver (sync test)', status: 'draft', category: 'Caregiver', employment_type: 'PART_TIME',
+      city: 'Columbus', state: 'OH', zip: '43215', pay_min: 16, pay_max: 19, pay_unit: 'HOUR', shifts: 'Weekends, Evenings',
+      summary: 'Test record for the job sync. Safe to delete.', description: 'Help seniors stay independent at home.\n\n- Companionship\n- Meal preparation',
+      requirements: '- 18+\n- Background check', benefits: '- Weekly pay', valid_through: '2026-12-31', apply_form_embed: null,
+    });
   });
 
   await t.test('credentials are stored encrypted and never returned by the admin API shape', () => {

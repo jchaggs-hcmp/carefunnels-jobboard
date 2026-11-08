@@ -284,7 +284,7 @@ function paneSync() {
     <h4 style="margin:6px 0">CareFunnels</h4>
     <div class="grid">
       <label>Sub-account (location) ID<input name="carefunnels_location_id" value="${esc(a.carefunnels_location_id)}" placeholder="e.g. d5cKVqIRK5jyEZHZCOcq"></label>
-      <label>Job object key<input name="cf_object_key" value="${esc(a.cf_object_key || 'custom_objects.jobs')}"></label>
+      <label>Job object key<input name="cf_object_key" value="${esc(a.cf_object_key || 'custom_objects.job_openings')}"></label>
       ${secret('cf_token', 'Private Integration token', a.cf_token_set, 'pit-…  (Settings → Private Integrations in the sub-account)')}
     </div>
     <h4 style="margin:16px 0 6px">WordPress (WP Job Manager)</h4>
