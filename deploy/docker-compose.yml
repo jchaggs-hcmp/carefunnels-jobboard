@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     environment:
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      SECRET_KEY: ${SECRET_KEY}
       BASE_URL: https://${PLATFORM_DOMAIN}
       DOMAIN_TARGET: ${PLATFORM_DOMAIN}
     volumes:

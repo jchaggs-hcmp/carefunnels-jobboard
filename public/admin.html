@@ -64,7 +64,7 @@ async function api(path, opts = {}) {
 const live = (a) => !!(a.custom_domain && a.domain_verified_at);
 const U = {
   home: (a) => (live(a) ? `https://${a.custom_domain}/` : `${BASE}/careers/${a.slug}`),
-  job: (a, j) => (live(a) ? `https://${a.custom_domain}/jobs/${j.slug}` : `${BASE}/careers/${a.slug}/${j.slug}`),
+  job: (a, j) => j.wp_url || (live(a) ? `https://${a.custom_domain}/jobs/${j.slug}` : `${BASE}/careers/${a.slug}/${j.slug}`),
   feed: (a) => (live(a) ? `https://${a.custom_domain}/feed.xml` : `${BASE}/feeds/${a.slug}.xml`),
   sitemap: (a) => (live(a) ? `https://${a.custom_domain}/sitemap.xml` : `${BASE}/sitemaps/${a.slug}.xml`),
 };
@@ -92,13 +92,13 @@ function render() {
       <button class="btn ghost sm" id="newAgency">+ New agency</button>` : `<span>${esc(agency?.name)}</span>`}
     <span class="sp"></span>${agency ? `<a class="small" href="${esc(U.home(agency))}" target="_blank" rel="noopener">View career site ↗</a>` : ''}
     <button class="btn ghost sm" id="logout">Sign out</button></div></header>
-    <main>${agency ? `<nav class="tabs">${[['jobs', 'Jobs'], ['apps', 'Applicants'], ['install', 'Install on website'], ['settings', 'Agency settings']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav><div id="pane"></div>`
+    <main>${agency ? `<nav class="tabs">${[['jobs', 'Jobs'], ['sync', 'CareFunnels → WordPress'], ['apps', 'Applicants'], ['install', 'Install on website'], ['settings', 'Agency settings']].map(([k, l]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${l}</button>`).join('')}</nav><div id="pane"></div>`
       : `<div class="card"><h3>No agencies yet</h3><p>Create your first agency to get started.</p><button class="btn" id="newAgency2">+ New agency</button></div>`}</main>`;
   $('#logout').onclick = logout;
   $('#agencySel') && ($('#agencySel').onchange = (e) => { agency = me.agencies.find((a) => String(a.id) === e.target.value); localStorage.setItem('hcj_agency', agency.id); cache = {}; render(); });
   [$('#newAgency'), $('#newAgency2')].forEach((b) => b && (b.onclick = () => agencyDialog()));
   document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { tab = b.dataset.tab; render(); }));
-  if (agency) ({ jobs: paneJobs, apps: paneApps, install: paneInstall, settings: paneSettings })[tab]();
+  if (agency) ({ jobs: paneJobs, sync: paneSync, apps: paneApps, install: paneInstall, settings: paneSettings })[tab]();
 }
 
 // ---------------- Jobs ----------------
@@ -109,14 +109,17 @@ async function paneJobs() {
   const list = await api(`/api/admin/agencies/${agency.id}/jobs`);
   const open = list.filter((j) => j.status === 'open').length;
   pane.innerHTML = `<div class="kpis"><div class="card"><b>${open}</b><span class="muted small">Open jobs</span></div><div class="card"><b>${list.reduce((s, j) => s + j.applicant_count, 0)}</b><span class="muted small">Total applicants</span></div></div>
-  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3 style="margin:0">Jobs</h3><button class="btn" id="addJob">+ Post a job</button></div>
+  <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:8px"><h3 style="margin:0">Jobs</h3><div class="row">${agency.carefunnels_location_id && agency.cf_token_set ? '<button class="btn ghost" id="syncNow">↻ Sync from CareFunnels</button>' : ''}<button class="btn" id="addJob">+ Post a job</button></div></div>
   ${list.length ? `<div class="tw"><table><thead><tr><th>Title</th><th>Location</th><th>Pay</th><th>Status</th><th>Applicants</th><th></th></tr></thead><tbody>
-  ${list.map((j) => `<tr><td><b>${esc(j.title)}</b><div class="small muted">${esc(j.category || '')} ${esc(TYPES[j.employment_type] || '')}</div></td>
-    <td>${esc([j.city, j.state].filter(Boolean).join(', '))}</td><td>${j.pay_min != null ? '$' + j.pay_min + (j.pay_max && j.pay_max !== j.pay_min ? '–$' + j.pay_max : '') + '/' + (j.pay_unit || 'HOUR').toLowerCase() : ''}</td>
+  ${list.map((j) => `<tr><td><b>${esc(j.title)}</b> ${j.source === 'carefunnels' ? '<span class="pill" title="Managed in CareFunnels">CareFunnels</span>' : ''}<div class="small muted">${esc(j.category || '')} ${esc(TYPES[j.employment_type] || '')}</div>
+      ${j.wp_url ? `<div class="small">WordPress: <a href="${esc(j.wp_url)}" target="_blank" rel="noopener">${esc(j.wp_url.replace(/^https?:\/\//, ''))}</a></div>` : ''}
+      ${j.sync_error ? `<div class="small" style="color:var(--err)">⚠ ${esc(j.sync_error)}</div>` : ''}</td>
+    <td>${esc([j.city || agency.city, j.state || agency.state].filter(Boolean).join(', '))}</td><td>${j.pay_min != null ? '$' + j.pay_min + (j.pay_max && j.pay_max !== j.pay_min ? '–$' + j.pay_max : '') + '/' + (j.pay_unit || 'HOUR').toLowerCase() : ''}</td>
     <td><span class="pill ${esc(j.status)}">${esc(j.status)}</span></td><td>${j.applicant_count}</td>
-    <td><div class="row"><button class="btn ghost sm" data-edit="${j.id}">Edit</button><button class="btn ghost sm" data-dup="${j.id}">Duplicate</button>
+    <td><div class="row">${j.source === 'carefunnels' ? '<span class="small muted">Edit in CareFunnels</span>' : `<button class="btn ghost sm" data-edit="${j.id}">Edit</button><button class="btn ghost sm" data-dup="${j.id}">Duplicate</button>`}
     ${j.status === 'open' ? `<a class="btn ghost sm" style="text-decoration:none" target="_blank" rel="noopener" href="${esc(U.job(agency, j))}">View</a>` : ''}</div></td></tr>`).join('')}
   </tbody></table></div>` : '<p class="muted">No jobs yet. Post your first caregiver opening.</p>'}</div>`;
+  $('#syncNow') && ($('#syncNow').onclick = async (e) => { e.target.disabled = true; e.target.textContent = 'Syncing…'; try { const r = await api(`/api/admin/agencies/${agency.id}/sync`, { method: 'POST' }); toast(r.errors?.length ? `Sync finished with ${r.errors.length} issue(s) — see CareFunnels → WordPress tab` : `Synced: ${r.records} job(s), ${r.pushed} updated on WordPress`); } catch (x) { alert(x.message); } paneJobs(); });
   $('#addJob').onclick = () => jobDialog({ status: 'open', pay_unit: 'HOUR', employment_type: 'PART_TIME', category: 'Caregiver', city: agency.city, state: agency.state, zip: agency.zip });
   pane.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => jobDialog(list.find((j) => j.id == b.dataset.edit))));
   pane.querySelectorAll('[data-dup]').forEach((b) => (b.onclick = () => { const { id, slug, ...rest } = list.find((j) => j.id == b.dataset.dup); jobDialog({ ...rest, title: rest.title + ' (copy)', status: 'draft' }); }));
@@ -255,10 +258,79 @@ function agencyFields(a = {}) {
     ${f('webhook_url', 'New applicant webhook URL', 'type="url" placeholder="GoHighLevel / Zapier / Make inbound webhook"', 'full')}
     ${f('notify_email', 'Hiring manager email (sent in webhook)', 'type="email"', 'full')}
     <fieldset class="full" style="border:1px solid var(--line);border-radius:8px;padding:12px"><legend style="font-weight:600;font-size:13px;padding:0 4px">CareFunnels application form</legend>
-      <div class="grid">${f('carefunnels_location_id', 'CareFunnels sub-account (location) ID', 'placeholder="optional, for reference"')}
+      <div class="grid">${f('carefunnels_location_id', 'CareFunnels sub-account (location) ID', 'placeholder="also used for job sync"')}
       <label class="full">Form embed code or form link<textarea name="apply_form_embed" rows="4" data-formcheck placeholder="Paste from CareFunnels → Sites → Forms → Integrate → Embed (or the form's share link). Leave blank to use the built-in application form.">${esc(a.apply_form_embed)}</textarea></label>
       <div class="full small muted" data-formout></div></div></fieldset></div>`;
 }
+// ---------------- CareFunnels → WordPress sync ----------------
+function syncReport(r) {
+  if (!r) return '<p class="muted small">Not synced yet.</p>';
+  const when = r.finished_at ? new Date(r.finished_at).toLocaleString() : '';
+  const line = (ok, label, detail) => `<div>${ok === null ? '➖' : ok ? '✅' : '⚠️'} <b>${label}</b> ${detail || ''}</div>`;
+  return `<div class="small" style="display:grid;gap:4px">
+    <div class="muted">Last sync: ${esc(when)}</div>
+    ${line(r.carefunnels === null ? null : r.carefunnels === 'ok', 'CareFunnels', r.carefunnels === 'ok' ? `${r.records} job record(s) read` : r.carefunnels === null ? 'not connected' : 'could not be read')}
+    ${line(r.wordpress === null ? null : r.wordpress === 'ok', 'WordPress', r.wordpress === 'ok' ? `${r.pushed} job(s) updated, ${r.unchanged} unchanged, ${r.removed} removed` : r.wordpress === null ? 'not connected' : 'problem — see below')}
+    ${r.problems?.length ? `<div style="margin-top:6px"><b>Held back (fix in CareFunnels):</b><ul style="margin:4px 0">${r.problems.map((p) => `<li>${esc(p.title)}: ${esc(p.problems.join('; '))}</li>`).join('')}</ul></div>` : ''}
+    ${r.errors?.length ? `<div style="margin-top:6px;color:var(--err)"><b>Errors:</b><ul style="margin:4px 0">${r.errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}</div>`;
+}
+function paneSync() {
+  const a = agency;
+  const secret = (name, label, isSet, ph) => `<label class="full">${label} ${isSet ? '<span class="pill open">saved</span>' : ''}<input name="${name}" type="password" autocomplete="new-password" placeholder="${isSet ? 'Saved — leave blank to keep, or paste a new one' : ph}"></label>`;
+  $('#pane').innerHTML = `
+  <div class="card"><h3 style="margin-top:0">How it works</h3>
+    <p class="small" style="margin:0">Your team adds and edits <b>Job</b> records in this client’s CareFunnels sub-account. Every few minutes (or instantly via the webhook below) the hub copies them to the client’s WordPress site as <b>WP Job Manager</b> listings, with the CareFunnels application form on each job page, and writes the live job link back onto the CareFunnels record. Marking a job <b>Filled</b> or deleting it takes it off the website.</p></div>
+  <form class="card" id="syncf"><h3 style="margin-top:0">Connections</h3>
+    <h4 style="margin:6px 0">CareFunnels</h4>
+    <div class="grid">
+      <label>Sub-account (location) ID<input name="carefunnels_location_id" value="${esc(a.carefunnels_location_id)}" placeholder="e.g. d5cKVqIRK5jyEZHZCOcq"></label>
+      <label>Job object key<input name="cf_object_key" value="${esc(a.cf_object_key || 'custom_objects.jobs')}"></label>
+      ${secret('cf_token', 'Private Integration token', a.cf_token_set, 'pit-…  (Settings → Private Integrations in the sub-account)')}
+    </div>
+    <h4 style="margin:16px 0 6px">WordPress (WP Job Manager)</h4>
+    <div class="grid">
+      <label>Site address<input name="wp_url" value="${esc(a.wp_url)}" placeholder="https://agencysite.com"></label>
+      <label>WordPress username<input name="wp_user" value="${esc(a.wp_user)}" autocomplete="off"></label>
+      ${secret('wp_app_password', 'Application Password', a.wp_app_password_set, 'xxxx xxxx xxxx xxxx xxxx xxxx')}
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn">Save</button><button class="btn ghost" type="button" id="testc">Test connections</button><button class="btn ghost" type="button" id="syncb">↻ Sync now</button></div>
+    <div id="testout" class="small" style="margin-top:10px"></div>
+  </form>
+  <div class="card"><h3 style="margin-top:0">Last sync</h3><div id="lastsync">${syncReport(a.last_sync_result)}</div></div>
+  <div class="card"><h3 style="margin-top:0">Optional: instant sync from a CareFunnels workflow</h3>
+    <p class="small muted" style="margin:0">Without this the hub checks every few minutes. For instant updates, add a workflow in the sub-account — trigger: the Job object’s <i>record created / record updated</i> — with a <b>Webhook</b> action (POST) to:</p>
+    <pre>${esc(a.cf_sync_webhook)}</pre><button class="btn ghost sm" data-copy>Copy</button></div>
+  <div class="card"><h3 style="margin-top:0">Client checklist</h3><ol class="small" style="margin:0;padding-left:18px;display:grid;gap:4px">
+    <li>CareFunnels: the sub-account has the <b>Jobs</b> custom object (from your snapshot) and a <b>Private Integration</b> token with scopes <code>objects/record.readonly</code>, <code>objects/record.write</code>, <code>objects/schema.readonly</code>.</li>
+    <li>WordPress: <b>WP Job Manager</b> and the <b>CareFunnels Job Sync</b> plugin are active; an Administrator created an <b>Application Password</b> (Users → Profile).</li>
+    <li>Agency settings: the client’s CareFunnels <b>application form</b> is pasted (it appears on every job page).</li>
+    <li>Click <b>Test connections</b>, then <b>Sync now</b>.</li></ol></div>`;
+  document.querySelectorAll('[data-copy]').forEach((b) => (b.onclick = () => { navigator.clipboard.writeText(b.previousElementSibling.textContent); toast('Copied'); }));
+  $('#syncf').onsubmit = async (e) => {
+    e.preventDefault();
+    try { Object.assign(agency, await api(`/api/admin/agencies/${agency.id}`, { method: 'PUT', body: JSON.stringify(formData(e.target)) })); toast('Saved'); paneSync(); } catch (x) { alert(x.message); }
+  };
+  $('#testc').onclick = async () => {
+    $('#testout').textContent = 'Testing…';
+    try {
+      const t = await api(`/api/admin/agencies/${agency.id}/test-connections`, { method: 'POST' });
+      const cfLine = !t.carefunnels ? '➖ CareFunnels: add the sub-account ID and token, then Save.'
+        : t.carefunnels.ok ? `✅ CareFunnels: connected to “${esc(t.carefunnels.object)}”.${t.carefunnels.missing_fields?.length ? ` <span style="color:var(--err)">Missing fields: ${t.carefunnels.missing_fields.map(esc).join(', ')}</span>` : ''}`
+        : `⚠️ CareFunnels: ${esc(t.carefunnels.error)}`;
+      const wpLine = !t.wordpress ? '➖ WordPress: add the site, username and Application Password, then Save.'
+        : t.wordpress.ok ? `✅ WordPress: connected — WP Job Manager ${esc(t.wordpress.wpjm_version || '')} active, ${t.wordpress.jobs_synced ?? 0} synced job(s) on the site.`
+        : `⚠️ WordPress: ${esc(t.wordpress.error)}`;
+      $('#testout').innerHTML = cfLine + '<br>' + wpLine;
+    } catch (x) { $('#testout').textContent = x.message; }
+  };
+  $('#syncb').onclick = async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Syncing…';
+    try { const r = await api(`/api/admin/agencies/${agency.id}/sync`, { method: 'POST' }); agency.last_sync_result = r; $('#lastsync').innerHTML = syncReport(r); toast('Sync finished'); }
+    catch (x) { alert(x.message); }
+    e.target.disabled = false; e.target.textContent = '↻ Sync now';
+  };
+}
+
 function paneSettings() {
   $('#pane').innerHTML = `<form class="card" id="setf"><h3 style="margin-top:0">Agency settings</h3>${agencyFields(agency)}<div class="row" style="margin-top:14px"><button class="btn">Save</button></div></form>
   <div class="card"><h3 style="margin-top:0">Agency access key</h3><p class="muted small">Give this to the agency so they can log in and manage their own jobs and applicants. Keep it private.</p>

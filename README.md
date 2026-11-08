@@ -19,6 +19,25 @@ It has no dependencies: Node 22.13+ and the built-in SQLite. There's no build st
 | CRM hand-off | Every application is POSTed as JSON to the agency's webhook (GoHighLevel inbound webhook, Zapier or Make) so it can trigger SMS/email follow-up |
 | Conversion tracking | Pushes `hc_job_application` to `dataLayer` (GTM/GA4) and fires the Meta Pixel `SubmitApplication` event |
 
+## CareFunnels → WordPress (WP Job Manager) job sync
+
+For clients whose website is WordPress with **WP Job Manager**:
+
+1. Your team enters jobs in the client's **CareFunnels sub-account** as **Jobs** custom-object records. See [docs/carefunnels-job-object.md](docs/carefunnels-job-object.md) for the object and its fields.
+2. The hub reads them every 5 minutes, or instantly through a CareFunnels workflow webhook.
+3. It publishes them on the client's WordPress site as WP Job Manager listings, so job URLs are on the client's own domain (e.g. `clientsite.com/job/caregiver/`).
+4. The client's **CareFunnels application form** is shown on each job page, and the live job URL is written back onto the CareFunnels record.
+5. Marking a job **Filled** expires the listing. Deleting the record trashes it.
+
+**Per-client setup** (Admin → **CareFunnels → WordPress** tab):
+- **CareFunnels:** the sub-account ID, plus a Private Integration token with scopes `objects/record.readonly`, `objects/record.write` and `objects/schema.readonly`.
+- **WordPress:** install **WP Job Manager** and this repo's plugin (`wordpress/hc-jobs`, *CareFunnels Job Sync*). An Administrator then creates an **Application Password**. Enter the site URL, username and Application Password.
+- Click **Test connections**, then **Sync now**.
+
+Safety: credentials are encrypted at rest (`SECRET_KEY`) and never shown again. A failed CareFunnels read never removes anything from WordPress. Broken records (no title, unknown status) are held back as drafts and reported.
+
+`npm test` runs the sync end-to-end against stand-in CareFunnels and WordPress APIs, plus a unit test of the WordPress plugin. It doesn't replace one test on a real WordPress + WP Job Manager site.
+
 ## CareFunnels application forms (applicants go straight into the client's sub-account)
 
 Each agency can use **its own CareFunnels form** for the apply step instead of the built-in form:
@@ -82,6 +101,8 @@ npm run seed   # optional demo agency "sunrise-home-care"
 | `DB_PATH` | `data/jobs.db` | SQLite file |
 | `UPLOAD_DIR` | `data/uploads` | Resume storage |
 | `DOMAIN_TARGET` | host of `BASE_URL` | What client CNAME records point to |
+| `SECRET_KEY` | — | **Required in production.** Encrypts stored CareFunnels tokens and WordPress passwords. Keep it stable. |
+| `SYNC_INTERVAL_MINUTES` | 5 | How often the CareFunnels → WordPress sync runs |
 
 ### Deploy (recommended: one VPS with Docker)
 

@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node --no-warnings server.js",
     "seed": "node --no-warnings lib/seed.js",
-    "test": "node --no-warnings --test test/"
+    "test": "node --no-warnings --test test/*.test.js && php test/wp-plugin-test.php"
   },
   "engines": { "node": ">=22.13" },
   "license": "UNLICENSED"

@@ -8,6 +8,8 @@ const render = require('./lib/render');
 const { parseFormEmbed, resolveApplyForm } = require('./lib/forms');
 const U = require('./lib/urls');
 const dns = require('node:dns').promises;
+const sync = require('./lib/sync');
+const wpClient = require('./lib/wordpress');
 
 const { PORT, BASE_URL } = U;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
@@ -68,7 +70,17 @@ const publicJob = (j, agency) => ({
   url: U.job(agency, j),
 });
 const publicAgency = (a) => ({ apply_form: resolveApplyForm(a, null), slug: a.slug, name: a.name, website: a.website, logo_url: a.logo_url, brand_color: a.brand_color, phone: a.phone, city: a.city, state: a.state, about: a.about });
-const adminAgency = (a, showKey) => (showKey ? a : { ...a, api_key: undefined });
+/** Agency as shown in the admin: credentials are write-only (only "is it set?" is returned). */
+const adminAgency = (a, showKey) => {
+  if (!a.cf_hook_key) a = agencies.ensureHookKey(a.id);
+  const { cf_token, wp_app_password, cf_hook_key, last_sync_result, ...rest } = a;
+  return {
+    ...rest, api_key: showKey ? a.api_key : undefined,
+    cf_token_set: !!cf_token, wp_app_password_set: !!wp_app_password,
+    cf_sync_webhook: `${BASE_URL}/hooks/carefunnels/${a.slug}/${cf_hook_key}`,
+    last_sync_result: last_sync_result ? JSON.parse(last_sync_result) : null,
+  };
+};
 
 /** Validates a pasted CareFunnels form embed before saving (throws 400 with a helpful message). */
 function validateForm(body) {
@@ -132,7 +144,7 @@ route('GET', '/api/public/:agency/jobs/:job', (req, res, p) => {
   send(res, 200, {
     agency: publicAgency(a),
     job: { ...publicJob(j, a), is_open: j.status === 'open', description_html: render.fullDescriptionHtml(j, a), apply_form: resolveApplyForm(a, j) },
-    jsonld: j.status === 'open' && !U.live(a) ? render.jobPostingJsonLd(j, a) : null, // with a live careers domain, Google gets it there only
+    jsonld: j.status === 'open' && !U.live(a) && !j.wp_url ? render.jobPostingJsonLd(j, a) : null, // with a live careers domain, Google gets it there only
   }, undefined, { ...cors, 'Cache-Control': 'public, max-age=60' });
 });
 
@@ -179,11 +191,11 @@ const pages = {
   home: (res, a) => send(res, 200, render.careerIndexPage(a, jobs.list(a.id, { status: 'public' })), html),
   job: (res, a, slug) => send(res, 200, render.careerJobPage(a, findPublicJob(a, slug)), html),
   feed: (res, a) => send(res, 200, render.xmlFeed(a, jobs.list(a.id, { status: 'public' })), xml),
-  sitemap: (res, a) => send(res, 200, render.sitemap(a, jobs.list(a.id, { status: 'public' })), xml),
+  sitemap: (res, a) => send(res, 200, render.sitemap(a, jobs.list(a.id, { status: 'public' }).filter((j) => !j.wp_url)), xml), // WordPress lists its own pages
 };
 const agencyOr404 = (slug) => { const a = agencies.bySlug(slug); if (!a) throw new HttpError(404, 'Not found'); return a; };
 route('GET', '/careers/:agency', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.home(a)) : pages.home(res, a); });
-route('GET', '/careers/:agency/:job', (req, res, p) => { const a = agencyOr404(p.agency); if (U.live(a)) return redirect(res, U.job(a, findPublicJob(a, p.job))); pages.job(res, a, p.job); });
+route('GET', '/careers/:agency/:job', (req, res, p) => { const a = agencyOr404(p.agency); const j = findPublicJob(a, p.job); if (U.live(a) || j.wp_url) return redirect(res, U.job(a, j)); pages.job(res, a, p.job); });
 route('GET', '/feeds/:agency.xml', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.feed(a)) : pages.feed(res, a); });
 route('GET', '/sitemaps/:agency.xml', (req, res, p) => { const a = agencyOr404(p.agency); U.live(a) ? redirect(res, U.sitemap(a)) : pages.sitemap(res, a); });
 route('GET', '/robots.txt', (req, res) => send(res, 200, 'User-agent: *\nDisallow: /admin\nDisallow: /api/\n', 'text/plain; charset=utf-8'));
@@ -206,19 +218,19 @@ route('POST', '/api/admin/agencies', async (req, res) => {
   const b = await readJson(req);
   if (!b.name) throw new HttpError(400, 'name is required');
   let created; try { created = agencies.create(validateForm(b)); } catch (e) { conflict(e); }
-  send(res, 201, created); if (created.custom_domain) verifyDomain(created).catch(() => {});
+  send(res, 201, adminAgency(created, true)); if (created.custom_domain) verifyDomain(created).catch(() => {});
 });
 route('PUT', '/api/admin/agencies/:id', async (req, res, p) => {
   const a = authAgency(req, p.id);
   const body = validateForm(await readJson(req));
   let updated; try { updated = agencies.update(a.id, body); } catch (e) { conflict(e); }
-  send(res, 200, updated);
+  send(res, 200, adminAgency(updated, true));
   if (updated.custom_domain && !updated.domain_verified_at) verifyDomain(updated).catch(() => {});
 });
 route('GET', '/api/admin/agencies/:id/domain-status', async (req, res, p) => send(res, 200, await verifyDomain(authAgency(req, p.id))));
 route('POST', '/api/admin/agencies/:id/rotate-key', (req, res, p) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
-  send(res, 200, agencies.rotateKey(authAgency(req, p.id).id));
+  send(res, 200, adminAgency(agencies.rotateKey(authAgency(req, p.id).id), true));
 });
 route('DELETE', '/api/admin/agencies/:id', (req, res, p) => {
   if (!isSuper(req)) throw new HttpError(401, 'Super admin only');
@@ -230,11 +242,35 @@ route('POST', '/api/admin/parse-form', async (req, res) => {
   send(res, 200, parseFormEmbed((await readJson(req)).embed) || {});
 });
 route('GET', '/api/admin/agencies/:id/jobs', (req, res, p) => send(res, 200, jobs.list(authAgency(req, p.id).id)));
-route('POST', '/api/admin/agencies/:id/jobs', async (req, res, p) => send(res, 201, jobs.create(authAgency(req, p.id).id, validateForm(await readJson(req)))));
-route('PUT', '/api/admin/agencies/:id/jobs/:job', async (req, res, p) => {
-  const j = jobs.update(authAgency(req, p.id).id, p.job, validateForm(await readJson(req))); if (!j) throw new HttpError(404, 'Job not found'); send(res, 200, j);
+route('POST', '/api/admin/agencies/:id/jobs', async (req, res, p) => {
+  const a = authAgency(req, p.id); const j = jobs.create(a.id, validateForm(await readJson(req)));
+  send(res, 201, j); sync.scheduleSync(a.id);
 });
-route('DELETE', '/api/admin/agencies/:id/jobs/:job', (req, res, p) => { jobs.remove(authAgency(req, p.id).id, p.job); send(res, 200, { ok: true }); });
+const notFromCareFunnels = (a, id) => {
+  const j = jobs.get(a.id, id); if (!j) throw new HttpError(404, 'Job not found');
+  if (j.source === 'carefunnels') throw new HttpError(409, 'This job comes from CareFunnels — edit or remove it there (changes sync automatically).');
+  return j;
+};
+route('PUT', '/api/admin/agencies/:id/jobs/:job', async (req, res, p) => {
+  const a = authAgency(req, p.id); notFromCareFunnels(a, p.job);
+  const j = jobs.update(a.id, p.job, validateForm(await readJson(req))); send(res, 200, j); sync.scheduleSync(a.id);
+});
+route('DELETE', '/api/admin/agencies/:id/jobs/:job', async (req, res, p) => {
+  const a = authAgency(req, p.id); const j = notFromCareFunnels(a, p.job);
+  const site = sync.wpConfig(a);
+  if (site && j.wp_post_id) { try { await wpClient.removeJob(site, j.external_id || `hub-${j.id}`); } catch (e) { throw new HttpError(502, `Couldn't remove it from WordPress: ${e.message}`); } }
+  jobs.remove(a.id, j.id); send(res, 200, { ok: true });
+});
+
+// ---- CareFunnels → WordPress sync ----
+route('POST', '/api/admin/agencies/:id/sync', async (req, res, p) => send(res, 200, await sync.syncAgency(authAgency(req, p.id).id)));
+route('POST', '/api/admin/agencies/:id/test-connections', async (req, res, p) => send(res, 200, await sync.testConnections(authAgency(req, p.id))));
+// A CareFunnels workflow ("Custom object record created/updated" → Webhook) can call this for an instant sync.
+route('POST', '/hooks/carefunnels/:agency/:key', (req, res, p) => {
+  const a = agencies.bySlug(p.agency);
+  if (!a || !a.cf_hook_key || !safeEq(p.key, a.cf_hook_key)) throw new HttpError(404, 'Not found');
+  req.resume(); sync.scheduleSync(a.id, 1500); send(res, 202, { ok: true, queued: true });
+});
 
 const APP_COLS = ['id', 'created_at', 'status', 'job_title', 'first_name', 'last_name', 'phone', 'email', 'zip', 'certifications', 'experience', 'availability', 'has_transport', 'message', 'source', 'notes'];
 route('GET', '/api/admin/agencies/:id/applications', (req, res, p) => send(res, 200, applications.list(authAgency(req, p.id).id)));
@@ -282,7 +318,7 @@ function handleAgencyHost(a, req, res, pathname) {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   let m;
   if (pathname === '/') return pages.home(res, a), true;
-  if ((m = pathname.match(/^\/jobs\/([^/]+)\/?$/))) return pages.job(res, a, m[1]), true;
+  if ((m = pathname.match(/^\/jobs\/([^/]+)\/?$/))) { const j = findPublicJob(a, m[1]); return (j.wp_url ? redirect(res, j.wp_url) : pages.job(res, a, m[1])), true; }
   if (pathname === '/sitemap.xml') return pages.sitemap(res, a), true;
   if (pathname === '/feed.xml') return pages.feed(res, a), true;
   if (pathname === '/robots.txt') return send(res, 200, `User-agent: *\nAllow: /\nSitemap: ${U.CUSTOM_SCHEME}://${a.custom_domain}/sitemap.xml\n`, 'text/plain; charset=utf-8'), true;
@@ -321,5 +357,6 @@ const server = http.createServer(async (req, res) => {
   send(res, 404, pathname.startsWith('/api/') ? { error: 'Not found' } : '<h1>404</h1>', pathname.startsWith('/api/') ? undefined : 'text/html; charset=utf-8', cors);
 });
 
+if (require.main === module) sync.startScheduler();
 if (require.main === module) server.listen(PORT, () => console.log(`Home care job board running at ${BASE_URL}  (admin: ${BASE_URL}/admin)`));
 module.exports = server;
